@@ -1,0 +1,156 @@
+<html>
+    <body>
+        <video crossorigin="anonymous" id="player" width="1280" height="720" playsinline webkit-playsinline></video>
+        <script>
+const mediaSrc = new MediaSource();
+const url = URL.createObjectURL(mediaSrc);
+let sourceBuffer = null;
+const arrayOfBlobs = [];
+let player = null;
+
+const videoPMT = new Uint8Array([
+    0x02, 0xb0, 0x12, 0x00, 0x01, 0xc1, 0x00, 0x00, 0xff, 0xff, 0xf0, 0x00, 0x1b, 0xe1, 0x01, 0xf0,
+    0x00, 0xc0, 0x83, 0xed, 0x67, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+])
+
+async function parseM3U8(url) {
+    const urlParts = url.split("/");
+    urlParts.pop();
+    const baseUrl = urlParts.join("/");
+
+    const resp = await fetch(url);
+    const m3u8 = await resp.text();
+    const segments = [];
+
+    const lines = m3u8.split("\n");
+    for (let i = 0; i < 50; i++) { //lines.length - 1; i++) {
+        const line = lines[i];
+        if (line.substring(0, 8) === "#EXTINF:") {
+            segments.push({ 
+                url: new URL(`${baseUrl}/${lines[i+1]}`)
+            });
+        }
+    }
+
+    return segments;
+}
+
+const downloadURL = function(data, fileName) {
+  const a = document.createElement('a');
+  a.href = data;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.style = 'display: none';
+  a.click();
+  a.remove();
+};
+
+const downloadBlob = function(data, fileName, mimeType) {
+  const blob = new Blob([data], {
+    type: mimeType
+  });
+  const url = window.URL.createObjectURL(blob);
+  downloadURL(url, fileName);
+  setTimeout(function() {
+    return window.URL.revokeObjectURL(url);
+  }, 1000);
+};
+
+function extractVideoTrack(ts) {
+    const len = ts.byteLength;
+    const tsBytes = new Uint8Array(ts);
+    let chunks = 0;
+    for (let i=1; i<len; i+=188) {
+        const pid = (tsBytes[i] & 31) * 256 + tsBytes[i+1];
+        if (pid === 4096 || pid === 0 || pid === 257) {
+            chunks++;
+        }
+    }
+
+    const newBuffer = new Uint8Array(chunks*188);
+    let offset = 0;
+    for (let i=0; i<len; i+=188) {
+        const pid = (tsBytes[i+1] & 31) * 256 + tsBytes[i+2];
+        if (pid === 4096 || pid === 0 || pid === 257) {
+            const tmp = new Uint8Array(ts, i, 188);
+            newBuffer.set(tmp, offset);
+            if (pid === 4096) {
+                newBuffer.set(videoPMT, offset + 5);
+            }
+            offset += 188;
+        }
+    }
+
+    console.log(`Old: ${len}, new: ${newBuffer.byteLength}`);
+    console.log(newBuffer);
+    return newBuffer.buffer;
+}
+
+async function bufferAll(url) {
+    const segments = await parseM3U8(url);
+    let i = 0;
+    let contentLength = 0;
+    for (const segment of segments) {
+        console.log(i);
+        i++;
+        const resp = await fetch(segment.url);
+        arrayOfBlobs.push(await resp.arrayBuffer());
+    }
+    for (const blob of arrayOfBlobs) {
+        contentLength += blob.byteLength;
+    }
+    const tsFile = new Uint8Array(contentLength);
+    let offset = 0;
+    for (const blob of arrayOfBlobs) {
+        const array = new Uint8Array(blob);
+        tsFile.set(array, offset);
+        offset += blob.byteLength;
+    }
+
+    //downloadBlob(tsFile, "concat.ts", "video/mp2t");
+}
+
+async function appendToSourceBuffer() {
+    if (mediaSrc.readyState === "open" && sourceBuffer && sourceBuffer.updating === false && arrayOfBlobs.length > 0) {
+        const blob = arrayOfBlobs.shift();
+        console.log('append');
+        sourceBuffer.appendBuffer(blob);
+    }
+
+    /*
+    const bufferLimit = 200;
+    if (player.buffered.length && player.buffered.end(0) - player.buffered.start(0) > bufferLimit) {
+        sourceBuffer.remove(0, player.buffered.end(0) - bufferLimit);
+    }
+    */
+}
+
+
+async function main() {
+    player = document.getElementById("player");
+
+    const m3u8 = "http://localhost/c2d6abf255e2110a026f_fran_2150276753_134455265/chunked/index-dvr.m3u8"
+    await bufferAll(m3u8);
+
+    player.src = url;
+    mediaSrc.addEventListener("sourceopen", function() {
+        sourceBuffer = mediaSrc.addSourceBuffer('video/mp2t; codecs="avc1.640020, mp4a.40.2"');
+        sourceBuffer.addEventListener("updateend", appendToSourceBuffer);
+        sourceBuffer.addEventListener("error", (buffer, ev) => {
+            debugger;
+        });
+    });
+
+    setInterval(function() {
+        appendToSourceBuffer();
+    }, 4000);
+}
+
+main();
+
+        </script>
+    </body>
+</html>
