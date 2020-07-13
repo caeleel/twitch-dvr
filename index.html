@@ -22,6 +22,18 @@
             cursor: pointer;
         }
 
+        #controls {
+            position: absolute;
+            bottom: 0;
+            height: 60px;
+            width: 100%;
+            background-color: rgba(0, 0, 0, 0.2);
+            font-size: 10px;
+            line-height: 10px;
+            font-weight: 600;
+            font-family: sans-serif;
+        }
+
         #volume {
             bottom: 21px;
         }
@@ -81,6 +93,36 @@
         #volume {
             left: 60px;
         }
+
+        #quality {
+            bottom: 20px;
+            height: 20px;
+            right: 60px;
+            box-sizing: border-box;
+            padding: 4px 6px;
+            border: 1px solid rgba(0, 0, 0, 0.2);
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            border-radius: 9px;
+        }
+
+        #quality-picker {
+            bottom: 42px;
+            right: 60px;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 6px 0;
+            border-radius: 2px;
+        }
+
+        .picker {
+            text-align: right;
+            padding: 4px 7.5px;
+        }
+
+        .picker:hover {
+            background-color: rgba(255, 255, 255, .2);
+        }
     </style>
     </head>
     <body>
@@ -114,7 +156,7 @@
                     </div>
                 </div>
                 <div id="quality-picker" class="control"></div>
-                <div id="quality" class="control"></div>
+                <div id="quality" class="control" onclick="togglePicker()"></div>
                 <div id="fullscreen" class="control" onclick="toggleFullscreen()">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M19 19V13H17V17H13V19H19Z" fill="white"/>
@@ -254,9 +296,23 @@ function parseMasterManifest(m3u8) {
                     case "VIDEO":
                         variant.name = vals[1];
                         break;
+                    case "FRAME-RATE":
+                        variant.framerate = Math.ceil(parseFloat(vals[1]));
+                        break;
                 }
             }
+            if (variant.framerate !== 30) {
+                variant.resolution += variant.framerate;
+            }
             variant.url = lines[i+1];
+            const picker = document.createElement("div");
+            picker.className = "picker";
+            picker.innerText = variant.resolution;
+            const idx = variants.length;
+            picker.addEventListener("click", () => {
+                setVariant(idx);
+            });
+            document.getElementById("quality-picker").appendChild(picker);
             variants.push(variant);
         }
     }
@@ -286,6 +342,8 @@ let paused = true;
 let firstTime = true;
 
 async function appendToSourceBuffer() {
+    if (!sourceBuffer) return;
+
     if (mediaSrc.readyState === "open" && sourceBuffer && sourceBuffer.updating === false && arrayOfBlobs.length > 0) {
         const blob = arrayOfBlobs.shift();
         sourceBuffer.appendBuffer(blob);
@@ -333,12 +391,21 @@ function play() {
     }
 }
 
+function togglePicker() {
+    const picker = document.getElementById("quality-picker");
+    picker.style.display = picker.style.display === "block" ? "none" : "block";
+}
+
+let bufferPromise = null;
+
 const rebuffer = async function() {
     const startGeneration = generation;
     console.log('rebuffering');
     budgetEnd += budget;
-    await bufferLive(variant.url, startGeneration);
-    appendToSourceBuffer();
+
+    if (bufferPromise) await bufferPromise;
+
+    bufferPromise = bufferLive(variant.url, startGeneration);
     console.log('hello');
     const remaining = Math.max(0, budgetEnd - Date.now());
     if (remaining === 0) budgetEnd = Date.now();
@@ -356,20 +423,22 @@ function setVolume(vol) {
 }
 
 function setVariant(idx) {
+    document.getElementById("quality-picker").style.display = "none";
     variant = variants[idx];
     if (sourceBuffer) {
-        pause();
-        mediaSrc.removeSourceBuffer(sourceBuffer);
+        if (!paused) pause();
+        lastFetched = new Set();
+    } else {
+        mediaSrc.addEventListener("sourceopen", function() {
+            sourceBuffer = mediaSrc.addSourceBuffer(`video/mp2t; codecs=${variant.codecs}`);
+            sourceBuffer.addEventListener("updateend", appendToSourceBuffer);
+            sourceBuffer.addEventListener("error", (buffer, ev) => {
+                debugger;
+            });
+        });
     }
 
-    mediaSrc.addEventListener("sourceopen", function() {
-        sourceBuffer = mediaSrc.addSourceBuffer(`video/mp2t; codecs=${variant.codecs}`);
-        sourceBuffer.addEventListener("updateend", appendToSourceBuffer);
-        sourceBuffer.addEventListener("error", (buffer, ev) => {
-            debugger;
-        });
-    });
-
+    document.getElementById("quality").innerText = variant.resolution;
     budgetEnd = Date.now() + budget;
     play();
 }
@@ -377,7 +446,7 @@ function setVariant(idx) {
 async function main() {
     player = document.getElementById("player");
 
-    variants = await getLiveM3U8('cheese');
+    variants = await getLiveM3U8('numotthenummy');
     setVariant(0);
     player.src = url;
     setVolume(player.volume);
