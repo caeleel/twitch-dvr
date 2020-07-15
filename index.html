@@ -8,11 +8,22 @@
             background-color: black;
         }
 
+        #control-hover {
+            position: absolute;
+            height: 40%;
+            width: 100%;
+            bottom: 0;
+        }
+
+        #control-hover:hover #controls {
+            display: block;
+        }
+
         video {
             position: absolute;
         }
 
-        #fullscreen, #play, #pause, #volume-container {
+        #fullscreen, #play, #pause, #volume-container, #seek-outer {
             bottom: 20px;
             height: 20px;
         }
@@ -22,12 +33,31 @@
             cursor: pointer;
         }
 
+        #live {
+            height: 8px;
+            width: 8px;
+            border-radius: 4px;
+            bottom: 26px;
+            right: 130px;
+        }
+
+        #live.live {
+            background-color: red;
+            box-shadow: 0 0 4px red;
+        }
+
+        #live.vod {
+            background-color: #555;
+            box-shadow: 0 0 4px #555;
+        }
+
         #controls {
+            display: none;
             position: absolute;
             bottom: 0;
             height: 60px;
             width: 100%;
-            background-color: rgba(0, 0, 0, 0.2);
+            background-color: rgba(0, 0, 0, 0.8);
             font-size: 10px;
             line-height: 10px;
             font-weight: 600;
@@ -44,11 +74,54 @@
             left: 80px;
         }
 
-        #volume-empty, #volume-slider, #volume-filled, #volume-handle {
+        #seek-outer {
+            width: calc(100% - 450px);
+            left: 230px;
+        }
+
+        #seek-container {
+            overflow: hidden;
+            width: 100%;
+            height: 20px;
+        }
+
+        #seek-outer:hover #seek-tooltip {
+            display: flex;
+        }
+
+        #seek-tooltip {
+            display: none;
+            width: 60px;
+            flex-direction: column;
+            align-items: center;
+            left: -30px;
+            bottom: 12px;
+            height: 24px;
+        }
+
+        #tooltip-text {
+            width: 100%;
+            border-radius: 4px;
+            background-color: white;
+            height: 18px;
+            box-sizing: border-box;
+            padding: 4px 6px;
+            text-align: center;
+        }
+
+        #tooltip-triangle {
+            width: 0;
+            height: 0;
+            border-left: 3px solid transparent;
+            border-right: 3px solid transparent;
+            border-top: 6px solid white;
+        }
+
+        .slider-empty, .slider, .slider-filled, .slider-handle {
             pointer-events: none;
         }
 
-        #volume-empty {
+        .slider-empty {
             height: 2px;
             border: 1px solid rgba(0, 0, 0, .2);
             background-color: rgba(255, 255, 255, .2);
@@ -57,18 +130,14 @@
             top: 8px;
         }
 
-        #volume-slider {
-            width: 60px;
-        }
-
-        #volume-filled {
+        .slider-filled {
             top: 9px;
             height: 2px;
-            width: 95%;
+            width: calc(100% - 4px);
             background-color: white;
         }
 
-        #volume-handle {
+        .slider-handle {
             background-color: white;
             border-radius: 7px;
             border: 0.5px solid rgba(0, 0, 0, .2);
@@ -100,10 +169,18 @@
             right: 60px;
             box-sizing: border-box;
             padding: 4px 6px;
-            border: 1px solid rgba(0, 0, 0, 0.2);
             background-color: rgba(0, 0, 0, 0.8);
             color: white;
             border-radius: 9px;
+        }
+
+        #timer {
+            bottom: 19.5px;
+            height: 20px;
+            left: calc(100% - 210px);
+            box-sizing: border-box;
+            padding: 4px 6px;
+            color: white;
         }
 
         #quality-picker {
@@ -128,6 +205,7 @@
     <body>
         <div id="player-container">
             <video id="player" width="100%" height="100%" playsinline></video>
+            <div id="control-hover">
             <div id="controls">
                 <div id="play" class="control" onclick="play()">
                     <svg width="16" height="20" viewBox="0 0 16 20" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -149,12 +227,28 @@
                     </svg>
                 </div>
                 <div id="volume-container" class="control">
-                    <div id="volume-empty" class="control"></div>
-                    <div id="volume-slider" class="control">
-                        <div id="volume-filled" class="control"></div>
-                        <div id="volume-handle" class="control"></div>
+                    <div class="slider-empty control"></div>
+                    <div id="volume-slider" class="slider control">
+                        <div class="slider-filled control"></div>
+                        <div class="slider-handle control"></div>
                     </div>
                 </div>
+                <div id="seek-outer" class="control">
+                    <div id="seek-tooltip" class="control">
+                        <div id="tooltip-text"></div>
+                        <div id="tooltip-triangle"></div>
+                    </div>
+                    <div id="seek-container" class="control">
+                        <div class="slider-empty control"></div>
+                        <div id="seek-slider" class="slider control">
+                            <div class="slider-filled control"></div>
+                            <div class="slider-handle control"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="timer" class="control"></div>
+                <div id="live" class="live control"></div>
                 <div id="quality-picker" class="control"></div>
                 <div id="quality" class="control" onclick="togglePicker()"></div>
                 <div id="fullscreen" class="control" onclick="toggleFullscreen()">
@@ -167,6 +261,7 @@
                     </svg>
                 </div>
             </div>
+            </div>
         </div>
         <script>
 const mediaSrc = new MediaSource();
@@ -175,6 +270,7 @@ let sourceBuffer = null;
 let arrayOfBlobs = [];
 let player = null;
 let generation = 0;
+let videoMode = 'live';
 
 function toggleFullscreen() {
     if (
@@ -206,6 +302,45 @@ function toggleFullscreen() {
     }
 }
 
+async function getVODUrl(channel, clientId) {
+    let resp = await fetch('https://gql.twitch.tv/gql', {
+        method: 'POST',
+        headers: {
+            'client-id': clientId,
+        },
+        body: JSON.stringify([{
+            operationName: "HomeOfflineCarousel",
+            variables: {
+                channelLogin: channel,
+                includeTrailerUpsell: false,
+                trailerUpsellVideoID: ""
+            },
+            extensions: {
+                persistedQuery: {
+                    version: 1,
+                    sha256Hash: "0c97fdcb4e0366b25ae35eb89cc932ecbbb056f663f92735d53776602e4e94c5",
+                }
+            },
+        }]),
+    });
+    let json = await resp.json();
+    const vodId = json[0].data.user.archiveVideos.edges[0].node.id;
+
+    resp = await fetch(`http://localhost/api/vods/${vodId}/access_token`, {
+        headers: {
+            'client-id': clientId,
+        },
+    });
+
+    json = await resp.json();
+    const token = json.token;
+    const sig = json.sig;
+
+    resp = await fetch(`http://localhost/vod/${vodId}.m3u8?allow_source=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
+    const text = await resp.text();
+    return parseMasterManifest(text);
+}
+
 async function parseVODM3U8(url) {
     const urlParts = url.split("/");
     urlParts.pop();
@@ -220,7 +355,7 @@ async function parseVODM3U8(url) {
         const line = lines[i];
         if (line.substring(0, 8) === "#EXTINF:") {
             segments.push({ 
-                url: new URL(`${baseUrl}/${lines[i+1]}`)
+                url: new URL(`${baseUrl}/${lines[i+1]}`).toString(),
             });
         }
     }
@@ -228,21 +363,34 @@ async function parseVODM3U8(url) {
     return segments;
 }
 
+async function bufferVOD(url, time, first) {
+    const vodSegmentLen = 10;
+
+    const idx = Math.floor(time / vodSegmentLen);
+    const segments = vodSegments[variantIdx];
+
+    if (!sourceBuffer.buffered.length || sourceBuffer.buffered.end(0) - player.currentTime < 0) {
+        first = true;
+    }
+    const toBuffer = first ? 60 : 60 - Math.floor((sourceBuffer.buffered.end(0) - player.currentTime) / vodSegmentLen);
+    const toDownload = segments.slice(idx, idx + toBuffer).map((s) => s.url);
+    await downloadSegments(generation, Promise.resolve(), toDownload);
+    vodTimer = setTimeout(() => bufferVOD(url, time + vodSegmentLen * toBuffer, false));
+}
+
 let lastFetched = new Set();
 
-async function bufferLive(url, startGeneration) {
+async function bufferLive(url) {
     const resp = await fetch(url);
     const m3u8 = await resp.text();
     const segments = [];
     const fetched = new Set();
 
-    const skipSegments = lastFetched.size === 0 ? 15 : 0;
+    const skipSegments = lastFetched.size === 0 ? 13 : 0;
 
     const lines = m3u8.split("\n");
     let skipped = 0;
     for (let i = 0; i < lines.length - 1; i++) {
-        if (generation !== startGeneration) break;
-
         const line = lines[i];
         let segment = null;
         if (line.substring(0, 8) === "#EXTINF:") {
@@ -260,16 +408,13 @@ async function bufferLive(url, startGeneration) {
             }
 
             if (!lastFetched.has(segment)) {
-                const resp = await fetch(segment);
-                arrayOfBlobs.push(await resp.arrayBuffer());
-                if (generation === startGeneration) {
-                    appendToSourceBuffer();
-                }
+                segments.push(segment);
             }
         }
     }
 
     lastFetched = fetched;
+    return segments;
 }
 
 function parseMasterManifest(m3u8) {
@@ -305,14 +450,6 @@ function parseMasterManifest(m3u8) {
                 variant.resolution += variant.framerate;
             }
             variant.url = lines[i+1];
-            const picker = document.createElement("div");
-            picker.className = "picker";
-            picker.innerText = variant.resolution;
-            const idx = variants.length;
-            picker.addEventListener("click", () => {
-                setVariant(idx);
-            });
-            document.getElementById("quality-picker").appendChild(picker);
             variants.push(variant);
         }
     }
@@ -320,10 +457,10 @@ function parseMasterManifest(m3u8) {
     return variants;
 }
 
-async function getLiveM3U8(channel) {
+async function getLiveM3U8(channel, clientId) {
     let resp = await fetch(`http://localhost/api/channels/${channel}/access_token`, {
         headers: {
-            'client-id': 'kimne78kx3ncx6brgo4mv6wki5h1ko',
+            'client-id': clientId,
         },
     });
 
@@ -344,6 +481,8 @@ let firstTime = true;
 async function appendToSourceBuffer() {
     if (!sourceBuffer) return;
 
+    await Promise.resolve();
+
     if (mediaSrc.readyState === "open" && sourceBuffer && sourceBuffer.updating === false && arrayOfBlobs.length > 0) {
         const blob = arrayOfBlobs.shift();
         sourceBuffer.appendBuffer(blob);
@@ -351,7 +490,7 @@ async function appendToSourceBuffer() {
 
     if (firstTime && sourceBuffer.buffered.length) {
         player.currentTime = sourceBuffer.buffered.start(0);
-        player.play();
+        setTimeout(() => player.play(), 0);
         firstTime = false;
     }
 
@@ -362,23 +501,35 @@ async function appendToSourceBuffer() {
 }
 
 let rebufferTimer = null;
-let variant = {};
+let vodTimer = null;
+let variantIdx = 0;
 const budget = 2000;
 let budgetEnd = 0;
 let variants = [];
+let vodVariants = [];
+let vodSegments = [];
+let maxTime = 1;
+
+function clearTimers() {
+    generation++;
+    if (rebufferTimer) {
+        clearTimeout(rebufferTimer);
+        rebufferTimer = null;
+    }
+    if (vodTimer) {
+        clearTimeout(vodTimer);
+        vodTimer = null;
+    }
+    arrayOfBlobs = [];
+}
 
 function pause() {
     document.getElementById("pause").style.display = "none";
     document.getElementById("play").style.display = "block";
     sourceBuffer.abort();
     sourceBuffer.remove(sourceBuffer.buffered.start(0), sourceBuffer.buffered.end(0));
-    if (rebufferTimer) {
-        clearTimeout(rebufferTimer);
-        rebufferTimer = null;
-        arrayOfBlobs = [];
-    }
+    clearTimers();
     paused = true;
-    generation++;
 }
 
 function play() {
@@ -391,6 +542,18 @@ function play() {
     }
 }
 
+function seek(ev) {
+    sourceBuffer.abort();
+    sourceBuffer.remove(sourceBuffer.buffered.start(0), sourceBuffer.buffered.end(0));
+
+    const width = seekContainer.getBoundingClientRect().width;
+    const seekTime = maxTime * ev.offsetX / width;
+    switchMode('vod');
+    clearTimers();
+    firstTime = true;
+    bufferVOD(vodVariants[variantIdx], seekTime, true);
+}
+
 function togglePicker() {
     const picker = document.getElementById("quality-picker");
     picker.style.display = picker.style.display === "block" ? "none" : "block";
@@ -398,14 +561,29 @@ function togglePicker() {
 
 let bufferPromise = null;
 
+async function downloadSegments(startGeneration, lastPromise, segments) {
+    for (const segment of segments) {
+        if (startGeneration !== generation) break;
+        const resp = await fetch(segment);
+        if (startGeneration !== generation) break;
+
+        const bytes = await resp.arrayBuffer();
+        if (startGeneration !== generation) break;
+        await lastPromise;
+        if (startGeneration !== generation) break;
+        arrayOfBlobs.push(bytes);
+        appendToSourceBuffer();
+    }
+}
+
 const rebuffer = async function() {
     const startGeneration = generation;
     console.log('rebuffering');
     budgetEnd += budget;
 
-    if (bufferPromise) await bufferPromise;
+    const segments = await bufferLive(variants[variantIdx].url);
+    bufferPromise = downloadSegments(startGeneration, bufferPromise, segments);
 
-    bufferPromise = bufferLive(variant.url, startGeneration);
     console.log('hello');
     const remaining = Math.max(0, budgetEnd - Date.now());
     if (remaining === 0) budgetEnd = Date.now();
@@ -415,6 +593,10 @@ const rebuffer = async function() {
 };
 
 const volume = document.getElementById("volume-slider");
+const seekTooltip = document.getElementById("seek-tooltip");
+const seekTooltipText = document.getElementById("tooltip-text");
+const seekContainer = document.getElementById("seek-container");
+const seekSlider = document.getElementById("seek-slider");
 
 function setVolume(vol) {
     vol = Math.min(1, Math.max(0, vol));
@@ -424,7 +606,9 @@ function setVolume(vol) {
 
 function setVariant(idx) {
     document.getElementById("quality-picker").style.display = "none";
-    variant = variants[idx];
+    variantIdx = idx
+    const variant = videoMode === 'live' ? variants[idx] : vodVariants[idx];
+
     if (sourceBuffer) {
         if (!paused) pause();
         lastFetched = new Set();
@@ -443,10 +627,43 @@ function setVariant(idx) {
     play();
 }
 
+function switchMode(mode) {
+    videoMode = mode;
+    document.getElementById("live").classList = ["control", mode];
+    if (mode === 'live') {
+        seekSlider.style.width = '100%';
+    }
+}
+
+function formatTime(secs) {
+    secs = Math.floor(secs);
+    const hours = Math.floor(secs / 3600);
+    let mins = Math.floor(secs / 60) % 60;
+    secs = secs % 60;
+    if (secs < 10) secs = `0${secs}`;
+    if (hours > 0 && mins < 10) mins = `0${mins}`;
+    return hours > 0 ? `${hours}:${mins}:${secs}` : `${mins}:${secs}`;
+}
+
 async function main() {
     player = document.getElementById("player");
+    switchMode('live');
 
-    variants = await getLiveM3U8('numotthenummy');
+    const channel = 'numotthenummy';
+    const clientId = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
+    variants = await getLiveM3U8(channel, clientId);
+
+    for (let i = 0; i < variants.length; i++) {
+        const v = variants[i];
+        const picker = document.createElement("div");
+        picker.className = "picker";
+        picker.innerText = v.resolution;
+        picker.addEventListener("click", () => {
+            setVariant(i);
+        });
+        document.getElementById("quality-picker").appendChild(picker);
+    }
+
     setVariant(0);
     player.src = url;
     setVolume(player.volume);
@@ -466,6 +683,31 @@ async function main() {
         document.addEventListener("mousemove", mouseMove);
         document.addEventListener("mouseup", mouseUp);
     });
+
+    const timerEl = document.getElementById("timer");
+
+    setInterval(() => {
+        if (player.currentTime > maxTime) maxTime = player.currentTime;
+        else seekSlider.style.width = `${player.currentTime / maxTime}%`;
+        timerEl.innerText = formatTime(player.currentTime);
+    }, 1000);
+
+    seekContainer.addEventListener("mousemove", (ev) => {
+        seekTooltip.style.left = `${ev.offsetX - 30}px`;
+        if (!maxTime) return;
+
+        const width = seekContainer.getBoundingClientRect().width;
+        seekTooltipText.innerText = formatTime(maxTime * ev.offsetX / width);
+    });
+    seekContainer.addEventListener("click", seek);
+
+    vodVariants = await getVODUrl(channel, clientId);
+    for (const variant of vodVariants) {
+        const url = new URL(variant.url);
+        url.protocol = "http:";
+        url.host = "localhost";
+        vodSegments.push(await parseVODM3U8(url.toString()));
+    }
 }
 
 main();
