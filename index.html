@@ -41,7 +41,7 @@
             right: 130px;
         }
 
-        #live.live {
+        #live.live, #live.vod:hover {
             background-color: red;
             box-shadow: 0 0 4px red;
         }
@@ -49,6 +49,11 @@
         #live.vod {
             background-color: #555;
             box-shadow: 0 0 4px #555;
+        }
+
+        #live.vod:hover #go-live {
+            display: flex;
+            left: -26px;
         }
 
         #controls {
@@ -89,7 +94,7 @@
             display: flex;
         }
 
-        #seek-tooltip {
+        .tooltip {
             display: none;
             width: 60px;
             flex-direction: column;
@@ -99,22 +104,37 @@
             height: 24px;
         }
 
-        #tooltip-text {
+        .tooltip-text {
             width: 100%;
             border-radius: 4px;
-            background-color: white;
             height: 18px;
             box-sizing: border-box;
             padding: 4px 6px;
             text-align: center;
         }
 
-        #tooltip-triangle {
+        #tooltip-text {
+            background-color: white;
+        }
+
+        .triangle {
             width: 0;
             height: 0;
             border-left: 3px solid transparent;
             border-right: 3px solid transparent;
+        }
+
+        #tooltip-triangle {
             border-top: 6px solid white;
+        }
+
+        #go-live-text {
+            background-color: red;
+            color: white;
+        }
+
+        #go-live-triangle {
+            border-top: 6px solid red;
         }
 
         .slider-empty, .slider, .slider-filled, .slider-handle {
@@ -204,7 +224,7 @@
     </head>
     <body>
         <div id="player-container">
-            <video id="player" width="100%" height="100%" playsinline></video>
+            <video id="player" width="100%" height="100%" playsinline ondblclick="toggleFullscreen()"></video>
             <div id="control-hover">
             <div id="controls">
                 <div id="play" class="control" onclick="play()">
@@ -234,9 +254,9 @@
                     </div>
                 </div>
                 <div id="seek-outer" class="control">
-                    <div id="seek-tooltip" class="control">
-                        <div id="tooltip-text"></div>
-                        <div id="tooltip-triangle"></div>
+                    <div id="seek-tooltip" class="tooltip control">
+                        <div id="tooltip-text" class="tooltip-text"></div>
+                        <div id="tooltip-triangle" class="triangle"></div>
                     </div>
                     <div id="seek-container" class="control">
                         <div class="slider-empty control"></div>
@@ -248,7 +268,12 @@
                 </div>
 
                 <div id="timer" class="control"></div>
-                <div id="live" class="live control"></div>
+                <div id="live" class="live control" onclick="golive()">
+                    <div class="tooltip control" id="go-live">
+                        <div id="go-live-text" class="tooltip-text">Go to live</div>
+                        <div id="go-live-triangle" class="triangle"></div>
+                    </div>
+                </div>
                 <div id="quality-picker" class="control"></div>
                 <div id="quality" class="control" onclick="togglePicker()"></div>
                 <div id="fullscreen" class="control" onclick="toggleFullscreen()">
@@ -270,7 +295,10 @@ let sourceBuffer = null;
 let arrayOfBlobs = [];
 let player = null;
 let generation = 0;
+let vodOffset = 0;
 let videoMode = 'live';
+const bufferLimit = 200;
+const handleRadius = 7.5;
 
 function toggleFullscreen() {
     if (
@@ -341,44 +369,34 @@ async function getVODUrl(channel, clientId) {
     return parseMasterManifest(text);
 }
 
-async function parseVODM3U8(url) {
-    const urlParts = url.split("/");
-    urlParts.pop();
-    const baseUrl = urlParts.join("/");
-
-    const resp = await fetch(url);
-    const m3u8 = await resp.text();
-    const segments = [];
-
-    const lines = m3u8.split("\n");
-    for (let i = 0; i < lines.length - 1; i++) {
-        const line = lines[i];
-        if (line.substring(0, 8) === "#EXTINF:") {
-            segments.push({ 
-                url: new URL(`${baseUrl}/${lines[i+1]}`).toString(),
-            });
-        }
-    }
-
-    return segments;
-}
-
 async function bufferVOD(url, time, first) {
     const vodSegmentLen = 10;
+    const bufferAmount = Math.floor(bufferLimit / vodSegmentLen) - 1;
+    const startGeneration = generation;
 
     const idx = Math.floor(time / vodSegmentLen);
-    const segments = vodSegments[variantIdx];
+    const baseURL = vodURLs[variantIdx];
+    totalElapsed = time;
+    vodOffset = time % vodSegmentLen;
 
     if (!sourceBuffer.buffered.length || sourceBuffer.buffered.end(0) - player.currentTime < 0) {
         first = true;
     }
-    const toBuffer = first ? 60 : 60 - Math.floor((sourceBuffer.buffered.end(0) - player.currentTime) / vodSegmentLen);
-    const toDownload = segments.slice(idx, idx + toBuffer).map((s) => s.url);
-    await downloadSegments(generation, Promise.resolve(), toDownload);
-    vodTimer = setTimeout(() => bufferVOD(url, time + vodSegmentLen * toBuffer, false));
+    const toBuffer = first ? bufferAmount : Math.max(0, bufferAmount - Math.floor((sourceBuffer.buffered.end(0) - player.currentTime) / vodSegmentLen));
+    const toDownload = [];
+    for (let i = idx; i < idx + toBuffer; i++) {
+        toDownload.push(`${baseURL}${i}.ts`);
+    }
+    const count = await downloadSegments(startGeneration, Promise.resolve(), toDownload);
+    if (generation !== startGeneration) return;
+    vodTimer = setTimeout(() => bufferVOD(url, time + vodSegmentLen * count, false), vodSegmentLen * 1000);
 }
 
 let lastFetched = new Set();
+let paused = true;
+let firstTime = true;
+let totalElapsed = 0;
+let timestampOffset = 0;
 
 async function bufferLive(url) {
     const resp = await fetch(url);
@@ -397,6 +415,8 @@ async function bufferLive(url) {
             segment = lines[i+1];
         } else if (line.substring(0, 23) === "#EXT-X-TWITCH-PREFETCH:") {
             segment = line.substring(23);
+        } else if (line.substring(0, 25) === "#EXT-X-TWITCH-TOTAL-SECS:") {
+            totalElapsed = parseFloat(line.substring(25));
         }
 
         if (segment) {
@@ -475,9 +495,6 @@ async function getLiveM3U8(channel, clientId) {
     return parsed;
 }
 
-let paused = true;
-let firstTime = true;
-
 async function appendToSourceBuffer() {
     if (!sourceBuffer) return;
 
@@ -489,13 +506,15 @@ async function appendToSourceBuffer() {
     }
 
     if (firstTime && sourceBuffer.buffered.length) {
-        player.currentTime = sourceBuffer.buffered.start(0);
-        setTimeout(() => player.play(), 0);
+        const startTime = sourceBuffer.buffered.start(0) + (videoMode === "vod" ? vodOffset : 0);
+
+        timestampOffset = totalElapsed - startTime;
+        player.currentTime = startTime;
+        if (!paused) setTimeout(() => player.play(), 0);
         firstTime = false;
     }
 
-    const bufferLimit = 200;
-    if (player.buffered.length && player.buffered.end(0) - player.buffered.start(0) > bufferLimit) {
+    if (sourceBuffer.updating === false && player.buffered.length && player.buffered.end(0) - player.buffered.start(0) > bufferLimit) {
         sourceBuffer.remove(player.buffered.start(0), player.buffered.end(0) - bufferLimit);
     }
 }
@@ -507,7 +526,7 @@ const budget = 2000;
 let budgetEnd = 0;
 let variants = [];
 let vodVariants = [];
-let vodSegments = [];
+let vodURLs = [];
 let maxTime = 1;
 
 function clearTimers() {
@@ -526,6 +545,12 @@ function clearTimers() {
 function pause() {
     document.getElementById("pause").style.display = "none";
     document.getElementById("play").style.display = "block";
+    if (videoMode === "vod") {
+        player.pause();
+        paused = true;
+        return;
+    }
+
     sourceBuffer.abort();
     sourceBuffer.remove(sourceBuffer.buffered.start(0), sourceBuffer.buffered.end(0));
     clearTimers();
@@ -535,6 +560,12 @@ function pause() {
 function play() {
     document.getElementById("play").style.display = "none";
     document.getElementById("pause").style.display = "block";
+    if (videoMode === "vod") {
+        player.play();
+        paused = false;
+        return;
+    }
+
     if (paused) {
         rebuffer();
         paused = false;
@@ -542,16 +573,35 @@ function play() {
     }
 }
 
+function getTimeAtOffset(offsetX) {
+    const width = seekContainer.getBoundingClientRect().width;
+    if (offsetX < handleRadius) return 0;
+    else if (width - offsetX < handleRadius) return maxTime;
+    else return (offsetX - handleRadius) / (width - 2*handleRadius) * maxTime;
+}
+
 function seek(ev) {
     sourceBuffer.abort();
+    clearTimers();
     sourceBuffer.remove(sourceBuffer.buffered.start(0), sourceBuffer.buffered.end(0));
 
     const width = seekContainer.getBoundingClientRect().width;
-    const seekTime = maxTime * ev.offsetX / width;
+    const seekTime = getTimeAtOffset(ev.offsetX);
+    seekSlider.style.width = `${(width - 2*handleRadius) * seekTime / maxTime + 2*handleRadius}px`;
     switchMode('vod');
-    clearTimers();
     firstTime = true;
     bufferVOD(vodVariants[variantIdx], seekTime, true);
+}
+
+function golive() {
+    if (videoMode === "live") return;
+
+    sourceBuffer.abort();
+    clearTimers();
+    sourceBuffer.remove(sourceBuffer.buffered.start(0), sourceBuffer.buffered.end(0));
+    switchMode('live');
+    paused = true;
+    play();
 }
 
 function togglePicker() {
@@ -562,29 +612,35 @@ function togglePicker() {
 let bufferPromise = null;
 
 async function downloadSegments(startGeneration, lastPromise, segments) {
+    let count = 0;
     for (const segment of segments) {
         if (startGeneration !== generation) break;
-        const resp = await fetch(segment);
-        if (startGeneration !== generation) break;
+        try {
+            const resp = await fetch(segment);
+            if (startGeneration !== generation) break;
 
-        const bytes = await resp.arrayBuffer();
-        if (startGeneration !== generation) break;
-        await lastPromise;
-        if (startGeneration !== generation) break;
-        arrayOfBlobs.push(bytes);
-        appendToSourceBuffer();
+            const bytes = await resp.arrayBuffer();
+            if (startGeneration !== generation) break;
+            await lastPromise;
+            if (startGeneration !== generation) break;
+            arrayOfBlobs.push(bytes);
+            appendToSourceBuffer();
+            count++;
+        } catch(e) {
+            console.log(`Warning: failed to fetch: ${e}, stopping download early`)
+            break;
+        }
     }
+    return count;
 }
 
 const rebuffer = async function() {
     const startGeneration = generation;
-    console.log('rebuffering');
     budgetEnd += budget;
 
     const segments = await bufferLive(variants[variantIdx].url);
     bufferPromise = downloadSegments(startGeneration, bufferPromise, segments);
 
-    console.log('hello');
     const remaining = Math.max(0, budgetEnd - Date.now());
     if (remaining === 0) budgetEnd = Date.now();
     if (generation === startGeneration) {
@@ -629,7 +685,7 @@ function setVariant(idx) {
 
 function switchMode(mode) {
     videoMode = mode;
-    document.getElementById("live").classList = ["control", mode];
+    document.getElementById("live").className = "control " + mode;
     if (mode === 'live') {
         seekSlider.style.width = '100%';
     }
@@ -649,7 +705,7 @@ async function main() {
     player = document.getElementById("player");
     switchMode('live');
 
-    const channel = 'numotthenummy';
+    const channel = 'deathsie';
     const clientId = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
     variants = await getLiveM3U8(channel, clientId);
 
@@ -687,17 +743,20 @@ async function main() {
     const timerEl = document.getElementById("timer");
 
     setInterval(() => {
-        if (player.currentTime > maxTime) maxTime = player.currentTime;
-        else seekSlider.style.width = `${player.currentTime / maxTime}%`;
-        timerEl.innerText = formatTime(player.currentTime);
+        if (paused || !sourceBuffer.buffered.length) return;
+        const adjustedTime = player.currentTime + timestampOffset;
+        const width = seekContainer.getBoundingClientRect().width;
+
+        if (adjustedTime > maxTime) maxTime = adjustedTime;
+        else if (width) seekSlider.style.width = `${(width - 2*handleRadius) * adjustedTime / maxTime + 2*handleRadius}px`;
+        timerEl.innerText = formatTime(adjustedTime);
     }, 1000);
 
     seekContainer.addEventListener("mousemove", (ev) => {
         seekTooltip.style.left = `${ev.offsetX - 30}px`;
         if (!maxTime) return;
 
-        const width = seekContainer.getBoundingClientRect().width;
-        seekTooltipText.innerText = formatTime(maxTime * ev.offsetX / width);
+        seekTooltipText.innerText = formatTime(getTimeAtOffset(ev.offsetX));
     });
     seekContainer.addEventListener("click", seek);
 
@@ -706,7 +765,9 @@ async function main() {
         const url = new URL(variant.url);
         url.protocol = "http:";
         url.host = "localhost";
-        vodSegments.push(await parseVODM3U8(url.toString()));
+        const urlParts = url.toString().split('/');
+        urlParts[urlParts.length - 1] = '';
+        vodURLs.push(urlParts.join('/'));
     }
 }
 
