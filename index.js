@@ -12,6 +12,36 @@ addStyle(`
         background-color: black;
     }
 
+    #player-toggle {
+        position: absolute;
+        top: 0;
+        width: 100%;
+        height: 33%;
+    }
+
+    #player-container.twitch {
+        display: none;
+    }
+
+    #toggle {
+        display: none;
+        position: absolute;
+        cursor: pointer;
+        background-color: rgba(0, 0, 0, 0.8);
+        color: white;
+        height: 18px;
+        line-height: 10px;
+        font-size: 10px;
+        padding: 4px 10px;
+        top: 20px;
+        right: 20px;
+        border-radius: 9px;
+    }
+
+    #player-toggle:hover #toggle {
+        display: block;
+    }
+
     #control-hover {
         position: absolute;
         height: 40%;
@@ -239,6 +269,8 @@ let seekSlider = null;
 let generation = 0;
 let vodOffset = 0;
 let videoMode = 'live';
+let playerType = 'dvr';
+
 const bufferLimit = 200;
 const handleRadius = 7.5;
 const vodDeadzone = 15;
@@ -331,8 +363,6 @@ async function bufferLive(url) {
     const segments = [];
     const fetched = new Set();
 
-    let skipSegments = lastFetched.size === 0;
-
     const lines = m3u8.split("\n");
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -341,17 +371,12 @@ async function bufferLive(url) {
             segment = lines[i+1];
         } else if (line.substring(0, 23) === "#EXT-X-TWITCH-PREFETCH:") {
             segment = line.substring(23);
-            skipSegments = false;
         } else if (line.substring(0, 25) === "#EXT-X-TWITCH-TOTAL-SECS:") {
             totalElapsed = parseFloat(line.substring(25));
         }
 
         if (segment) {
             fetched.add(segment);
-
-            if (skipSegments) {
-                continue;
-            }
 
             if (!lastFetched.has(segment)) {
                 totalElapsed -= (budget / 1000);
@@ -361,6 +386,9 @@ async function bufferLive(url) {
     }
 
     lastFetched = fetched;
+
+    if (segments.length > 3) return segments.slice(segments.length - 3);
+
     return segments;
 }
 
@@ -433,22 +461,31 @@ async function appendToSourceBuffer() {
     }
 }
 
+let lastPlayerTime = -1;
+let lastRealTime = -1;
+
 function afterBufferUpdate() {
     if (!sourceBuffer) return;
 
     console.log(`firstTime = ${firstTime} sourceBuffer.buffered = ${sourceBuffer.buffered.length}`);
-    
-    if (sourceBuffer.buffered.length > 1) {
-        if (player.currentTime === sourceBuffer.buffered.end(0)) {
-            sourceBuffer.remove(sourceBuffer.buffered.start(0), sourceBuffer.buffered.end(0));
-            player.currentTime = sourceBuffer.buffered.start(1);
-        } else if (player.currentTime === sourceBuffer.buffered.end(1)) {
-            sourceBuffer.remove(sourceBuffer.buffered.start(1), sourceBuffer.buffered.end(1));
-            player.currentTime = sourceBuffer.buffered.start(0);
+
+    const numBuffers = sourceBuffer.buffered.length;
+    if (numBuffers > 1) {
+        if (lastRealTime > 0) {
+            const realDiff = Date.now() - lastRealTime;
+            const playerDiff = player.currentTime - lastPlayerTime;
+
+            if (realDiff - playerDiff * 1000 > 200) {
+                pause();
+                play();
+                return;
+            }
         }
     }
+    lastPlayerTime = player.currentTime;
+    lastRealTime = Date.now();
 
-    if (firstTime && sourceBuffer.buffered.length) {
+    if (firstTime && numBuffers) {
         const startTime = sourceBuffer.buffered.start(0) + (videoMode === "vod" ? vodOffset : 0);
 
         timestampOffset = totalElapsed - startTime;
@@ -459,9 +496,11 @@ function afterBufferUpdate() {
         }
         if (!paused) setTimeout(() => player.play(), 0);
         firstTime = false;
+    } else if (numBuffers && player.currentTime < sourceBuffer.buffered.start(0)) {
+        player.currentTime = sourceBuffer.buffered.start(0);
     }
 
-    if (sourceBuffer.updating === false && player.buffered.length && player.buffered.end(0) - player.buffered.start(0) > bufferLimit) {
+    if (sourceBuffer.updating === false && numBuffers && player.buffered.end(0) - player.buffered.start(0) > bufferLimit) {
         sourceBuffer.remove(player.buffered.start(0), player.buffered.end(0) - bufferLimit);
     }
 }
@@ -481,8 +520,15 @@ let timeOriginPlayerTime = 0;
 function clearTimers() {
     if (sourceBuffer) {
         sourceBuffer.abort();
-        if (sourceBuffer.buffered.length) {
-            sourceBuffer.remove(sourceBuffer.buffered.start(0), sourceBuffer.buffered.end(0));
+        let maxBuffered = 0;
+        for (let i = 0; i < sourceBuffer.buffered.length; i++) {
+            if (sourceBuffer.buffered.end(i) > maxBuffered) {
+                maxBuffered = sourceBuffer.buffered.end(i);
+            }
+        }
+        console.log(`maxBuffered = ${maxBuffered}`)
+        if (maxBuffered > 0) {
+            sourceBuffer.remove(0, maxBuffered);
         }
     }
     generation++;
@@ -523,7 +569,6 @@ function play() {
     }
 
     if (paused) {
-        console.log('rebuffering');
         rebuffer();
         paused = false;
         firstTime = true;
@@ -575,6 +620,28 @@ function togglePicker() {
     picker.style.display = picker.style.display === "block" ? "none" : "block";
 }
 
+function togglePlayer() {
+    let typeName = 'Twitch';
+    if (playerType === 'dvr') {
+        typeName = 'DVR';
+        playerType = 'twitch';
+        pause();
+        for (const video of document.querySelectorAll(".video-player__container video")) {
+            if (video.id !== "player") {
+                console.log(video);
+                video.play();
+                break;
+            }
+        }
+    } else {
+        playerType = 'dvr';
+        switchChannel();
+    }
+    
+    document.querySelector("#player-toggle #toggle").innerText = `Switch to ${typeName} player`;
+    document.getElementById("player-container").className = playerType;
+}
+
 let bufferPromise = null;
 
 async function downloadSegments(startGeneration, lastPromise, segments) {
@@ -590,7 +657,6 @@ async function downloadSegments(startGeneration, lastPromise, segments) {
             await lastPromise;
             if (startGeneration !== generation) break;
             arrayOfBlobs.push(bytes);
-            console.log(`SEGMENT = ${segment}`);
             appendToSourceBuffer();
             count++;
         } catch(e) {
@@ -640,14 +706,13 @@ function setVariant(idx) {
             play();
         } else {
             mediaSrc.addEventListener("sourceopen", function() {
-                console.log('onsourceopen');
                 sourceBuffer = mediaSrc.addSourceBuffer(`video/mp2t; codecs=${variant.codecs}`);
                 sourceBuffer.addEventListener("updateend", () => {
                     afterBufferUpdate();
                     appendToSourceBuffer();
                 });
                 sourceBuffer.addEventListener("error", (buffer, ev) => {
-                    debugger;
+                    console.warn("Failed to append to buffer");
                 });
                 budgetEnd = Date.now();
                 play();
@@ -679,6 +744,7 @@ function formatTime(secs) {
 }
 
 async function switchChannel() {
+    if (playerType === 'twitch') return;
     console.log('switching channel');
 
     mediaSrc = new MediaSource();
@@ -734,8 +800,13 @@ async function main() {
         console.log('installing player');
 
         paused = true;
+        playerToggle = document.createElement('div');
+        playerToggle.id = "player-toggle";
+        playerToggle.innerHTML = `<div id="toggle">${playerType === 'dvr' ? 'Switch to Twitch Player' : 'Switch to DVR Player'}</div>`;
+
         playerContainer = document.createElement("div");
         playerContainer.id = "player-container";
+        playerContainer.className = playerType;
         playerContainer.innerHTML = `
             <video id="player" width="100%" height="100%" playsinline"></video>
             <div id="control-hover">
@@ -802,6 +873,7 @@ async function main() {
             </div>
         `;
         videoContainer.appendChild(playerContainer);
+        videoContainer.appendChild(playerToggle);
         player = document.getElementById("player");
         volume = document.getElementById("volume-slider");
         seekTooltip = document.getElementById("seek-tooltip");
@@ -814,6 +886,7 @@ async function main() {
         playerContainer.addEventListener("dblclick", toggleFullscreen);
         document.getElementById("quality").addEventListener("click", togglePicker);
         document.getElementById("live").addEventListener("click", golive);
+        document.querySelector("#player-toggle #toggle").addEventListener("click", togglePlayer);
         setVolume(player.volume);
         switchChannel();
 
@@ -867,7 +940,7 @@ async function main() {
                 if (!document.getElementById("player")) {
                     installPlayer();
                 } else {
-                    playerContainer.style.display = 'block';
+                    playerContainer.style.display = '';
                     pause();
                     switchChannel();
                 }
@@ -882,6 +955,7 @@ async function main() {
             }
         }
         if (!inChannelPage) return;
+        if (playerType === 'twitch') return;
 
         const adIframe = document.getElementById("amazon-video-ads-iframe");
         if (adIframe) adIframe.remove();
