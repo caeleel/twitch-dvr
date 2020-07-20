@@ -467,8 +467,6 @@ let lastRealTime = -1;
 function afterBufferUpdate() {
     if (!sourceBuffer) return;
 
-    console.log(`firstTime = ${firstTime} sourceBuffer.buffered = ${sourceBuffer.buffered.length}`);
-
     const numBuffers = sourceBuffer.buffered.length;
     if (numBuffers > 1) {
         if (lastRealTime > 0) {
@@ -526,7 +524,7 @@ function clearTimers() {
                 maxBuffered = sourceBuffer.buffered.end(i);
             }
         }
-        console.log(`maxBuffered = ${maxBuffered}`)
+        
         if (maxBuffered > 0) {
             sourceBuffer.remove(0, maxBuffered);
         }
@@ -555,6 +553,7 @@ function pause() {
         return;
     }
 
+    lastFetched = new Set();
     clearTimers();
     paused = true;
 }
@@ -628,7 +627,6 @@ function togglePlayer() {
         pause();
         for (const video of document.querySelectorAll(".video-player__container video")) {
             if (video.id !== "player") {
-                console.log(video);
                 video.play();
                 break;
             }
@@ -745,7 +743,6 @@ function formatTime(secs) {
 
 async function switchChannel() {
     if (playerType === 'twitch') return;
-    console.log('switching channel');
 
     mediaSrc = new MediaSource();
     const url = URL.createObjectURL(mediaSrc);
@@ -796,8 +793,6 @@ async function main() {
             setTimeout(installPlayer, 1000);
             return;
         }
-
-        console.log('installing player');
 
         paused = true;
         playerToggle = document.createElement('div');
