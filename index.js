@@ -10,6 +10,7 @@ addStyle(`
         height: 100%;
         position: relative;
         background-color: black;
+        user-select: none;
     }
 
     #player-toggle {
@@ -17,6 +18,7 @@ addStyle(`
         top: 0;
         width: 100%;
         height: 33%;
+        user-select: none;
     }
 
     #player-container.twitch {
@@ -269,12 +271,12 @@ let seekSlider = null;
 let generation = 0;
 let vodOffset = 0;
 let videoMode = 'live';
-let playerType = 'dvr';
+let playerType = localStorage.getItem("twitch-dvr:player-type") ? localStorage.getItem("twitch-dvr:player-type") : "dvr";
 
 const bufferLimit = 200;
-const handleRadius = 7.5;
+const handleRadius = 7.25;
 const vodDeadzone = 15;
-const vodDeadzoneBuffer = 5;
+const vodDeadzoneBuffer = 15;
 
 function toggleFullscreen() {
     if (document.fullscreenElement) {
@@ -582,14 +584,17 @@ function getTimeAtOffset(offsetX) {
 }
 
 function seek(ev) {
-    const width = seekContainer.getBoundingClientRect().width;
     const seekTime = getTimeAtOffset(ev.offsetX);
+    seekToTime(seekTime);
+}
 
+function seekToTime(seekTime) {
     if (maxTime - seekTime < vodDeadzoneBuffer + vodDeadzoneBuffer) {
         golive();
         return;
     }
 
+    const width = seekContainer.getBoundingClientRect().width;
     seekSlider.style.width = `${(width - 2*handleRadius) * seekTime / maxTime + 2*handleRadius}px`;
 
     const buffered = sourceBuffer.buffered;
@@ -616,7 +621,13 @@ function golive() {
 
 function togglePicker() {
     const picker = document.getElementById("quality-picker");
-    picker.style.display = picker.style.display === "block" ? "none" : "block";
+    const pickerOpen = picker.style.display === "block";
+    if (pickerOpen) {
+        document.removeEventListener("click", togglePicker);
+    } else {
+        setTimeout(() => document.addEventListener("click", togglePicker), 1);
+    }
+    picker.style.display = pickerOpen ? "none" : "block";
 }
 
 function togglePlayer() {
@@ -636,6 +647,7 @@ function togglePlayer() {
         switchChannel();
     }
     
+    localStorage.setItem("twitch-dvr:player-type", playerType);
     document.querySelector("#player-toggle #toggle").innerText = `Switch to ${typeName} player`;
     document.getElementById("player-container").className = playerType;
 }
@@ -685,11 +697,14 @@ const rebuffer = async function() {
 
 function setVolume(vol) {
     vol = Math.min(1, Math.max(0, vol));
+    localStorage.setItem('twitch-dvr:vol', vol);
     player.volume = vol;
-    volume.style.width = `${vol * 100 + 15.5}px`;
+    volume.style.width = `${vol * 100 + handleRadius * 2}px`;
 }
 
 function setVariant(idx) {
+    idx = Math.min(idx, variants.length - 1);
+    localStorage.setItem("twitch-dvr:variant", idx);
     document.getElementById("quality-picker").style.display = "none";  
     variantIdx = idx
 
@@ -749,7 +764,7 @@ async function switchChannel() {
     sourceBuffer = null;
     switchMode('live');
     
-    const channel = document.location.pathname.substring(1);
+    const channel = document.location.pathname.split('/')[1];
     const clientId = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
     document.getElementById("quality-picker").innerHTML = "";
     variants = await getLiveM3U8(channel, clientId);
@@ -765,7 +780,8 @@ async function switchChannel() {
         document.getElementById("quality-picker").appendChild(picker);
     }
 
-    setVariant(0);
+    const savedVariant = localStorage.getItem("twitch-dvr:variant");
+    setVariant(savedVariant ? parseInt(savedVariant) : 0);
     player.src = url;
     
     vodURLs = [];
@@ -778,8 +794,37 @@ async function switchChannel() {
 }
 
 function isInChannel(url) {
-    return url.split("/").length === 2 && url !== "/" && url !== "/directory";
+    const urlParts = url.split("/");
+    if (urlParts.length === 3 && (urlParts[2] === "videos" || urlParts[2] === "schedule" || urlParts[2] === "about")) return true;
+    return urlParts.length === 2 && url !== "/" && url !== "/directory";
 }
+
+const seekStep = 10;
+
+function keyboardHandler(e) {
+    if (!player) return;
+    switch (e.keyCode) {
+        case 37:
+            let newTime = player.currentTime - seekStep + timestampOffset;
+            if (maxTime - newTime < vodDeadzone + vodDeadzoneBuffer) {
+                newTime = maxTime - vodDeadzoneBuffer - vodDeadzone;
+            }
+            seekToTime(newTime);
+            break;
+        case 39:
+            seekToTime(player.currentTime + seekStep + timestampOffset);
+            break;
+        case 32:
+            const nodeName = e.target.nodeName;
+            if (nodeName !== "DIV" && nodeName !== "BODY" && nodeName !== "VIDEO") break;
+            if (paused) play();
+            else pause();
+            e.stopPropagation();
+            break;
+    }
+}
+
+document.addEventListener("keydown", keyboardHandler);
 
 async function main() {
     let updateSeekLabel = null;
@@ -878,20 +923,24 @@ async function main() {
         document.getElementById("play").addEventListener("click", play);
         document.getElementById("pause").addEventListener("click", pause);
         document.getElementById("fullscreen").addEventListener("click", toggleFullscreen);
+        document.getElementById("player-toggle").addEventListener("dblclick", toggleFullscreen);
         playerContainer.addEventListener("dblclick", toggleFullscreen);
         document.getElementById("quality").addEventListener("click", togglePicker);
+        document.getElementById("quality").addEventListener("dblclick", (e) => e.stopPropagation());
         document.getElementById("live").addEventListener("click", golive);
         document.querySelector("#player-toggle #toggle").addEventListener("click", togglePlayer);
+        const savedVol = localStorage.getItem("twitch-dvr:vol");
+        player.volume = savedVol ? parseFloat(savedVol) : 1;
         setVolume(player.volume);
         switchChannel();
 
         const volumeContainer = document.getElementById("volume-container");
         volumeContainer.addEventListener("mousedown", (ev) => {
             let leftSide = ev.pageX - ev.offsetX;
-            setVolume((ev.offsetX - 7.5) / 100);
+            setVolume((ev.offsetX - handleRadius) / 100);
 
             const mouseMove = (ev) => {
-            setVolume((ev.pageX - leftSide - 7.5) / 100);
+                setVolume((ev.pageX - leftSide - handleRadius) / 100);
             }
             const mouseUp = (ev) => {
                 document.removeEventListener("mousemove", mouseMove);
@@ -929,9 +978,18 @@ async function main() {
 
     setInterval(() => {
         if (document.location.pathname !== currentUrl) {
+            let prevChannel = null;
+            if (inChannelPage) {
+                prevChannel = currentUrl.split('/')[1];
+            }
             currentUrl = document.location.pathname;
             inChannelPage = isInChannel(currentUrl);
+            const toggle = document.getElementById("player-toggle");
             if (inChannelPage) {
+                if (currentUrl.split('/')[1] === prevChannel) {
+                    return;
+                }
+                toggle.style.display = '';
                 if (!document.getElementById("player")) {
                     installPlayer();
                 } else {
@@ -940,6 +998,7 @@ async function main() {
                     switchChannel();
                 }
             } else {
+                toggle.style.display = 'none';
                 if (sourceBuffer) {
                     clearTimers();
                 }
