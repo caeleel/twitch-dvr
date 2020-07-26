@@ -99,7 +99,7 @@ addStyle(`
         bottom: 0;
         height: 60px;
         width: 100%;
-        background-color: rgba(0, 0, 0, 0.8);
+        background-image: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,1));
         font-size: 10px;
         line-height: 10px;
         font-weight: 600;
@@ -278,6 +278,28 @@ const handleRadius = 7.25;
 const vodDeadzone = 15;
 const vodDeadzoneBuffer = 15;
 
+function hideCursor() {
+    if (paused) return;
+    if (document.getElementById("player-container")) {
+        document.getElementById("player-container").style.cursor = 'none';
+        document.getElementById("controls").style.display = 'none';
+    }
+}
+
+function showCursor() {
+    if (document.getElementById("player-container")) {
+        document.getElementById("player-container").style.cursor = '';
+        document.getElementById("controls").style.display = 'block';
+    }
+}
+
+let cursorTimer = null;
+function showCursorForAWhile() {
+    showCursor();
+    if (cursorTimer) clearTimeout(cursorTimer);
+    cursorTimer = setTimeout(hideCursor, 2000);
+}
+
 function toggleFullscreen() {
     if (document.fullscreenElement) {
         if (document.exitFullscreen) {
@@ -288,8 +310,21 @@ function toggleFullscreen() {
         if (element.requestFullscreen) {
             element.requestFullscreen();
         }
+
+        showCursorForAWhile();
+        document.addEventListener('mousemove', showCursorForAWhile);
     }
 }
+
+document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) {
+        document.removeEventListener('mousemove', showCursorForAWhile);
+        showCursor();
+        if (document.getElementById("controls")) {
+            document.getElementById("controls").style.display = '';
+        }
+    }
+});
 
 async function getVODUrl(channel, clientId) {
     let resp = await fetch('https://gql.twitch.tv/gql', {
@@ -558,6 +593,7 @@ function pause() {
     lastFetched = new Set();
     clearTimers();
     paused = true;
+    document.getElementById("controls").style.display = "block";
 }
 
 function play() {
@@ -573,6 +609,11 @@ function play() {
         rebuffer();
         paused = false;
         firstTime = true;
+    }
+    if (document.fullscreenElement) {
+        showCursorForAWhile();
+    } else {
+        document.getElementById("controls").style.display = "";
     }
 }
 
@@ -703,11 +744,13 @@ function setVolume(vol) {
 }
 
 function setVariant(idx) {
-    idx = Math.min(idx, variants.length - 1);
+    if (!document.getElementById("quality-picker")) return;
+    idx = Math.max(0, Math.min(idx, variants.length - 1));
     localStorage.setItem("twitch-dvr:variant", idx);
     document.getElementById("quality-picker").style.display = "none";  
     variantIdx = idx
 
+    if (!variants[idx]) return;
     document.getElementById("quality").innerText = variants[idx].resolution;
 
     if (videoMode === "live") {
