@@ -989,7 +989,7 @@ async function main() {
                 if (currentUrl.split('/')[1] === prevChannel) {
                     return;
                 }
-                toggle.style.display = '';
+                if (toggle) toggle.style.display = '';
                 if (!document.getElementById("player")) {
                     installPlayer();
                 } else {
@@ -998,7 +998,7 @@ async function main() {
                     switchChannel();
                 }
             } else {
-                toggle.style.display = 'none';
+                if (toggle) toggle.style.display = 'none';
                 if (sourceBuffer) {
                     clearTimers();
                 }
