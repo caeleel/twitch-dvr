@@ -289,6 +289,7 @@ function hideCursor() {
 let cursorTimer = null;
 function showCursor() {
     if (cursorTimer) clearTimeout(cursorTimer);
+    cursorTimer = null;
     if (document.getElementById("player-container")) {
         document.getElementById("player-container").style.cursor = '';
         document.getElementById("controls").style.display = 'block';
@@ -617,8 +618,14 @@ function play() {
     }
 }
 
+function getSeekWidth() {
+    const container = document.getElementById("player-container");
+    if (!container) return 0;
+    return container.getBoundingClientRect().width - 450;
+}
+
 function getTimeAtOffset(offsetX) {
-    const width = seekContainer.getBoundingClientRect().width;
+    const width = getSeekWidth();
     if (offsetX < handleRadius) return 0;
     else if (width - offsetX < handleRadius) return maxTime;
     else return (offsetX - handleRadius) / (width - 2*handleRadius) * maxTime;
@@ -635,8 +642,10 @@ function seekToTime(seekTime) {
         return;
     }
 
-    const width = seekContainer.getBoundingClientRect().width;
+    const width = getSeekWidth();
     seekSlider.style.width = `${(width - 2*handleRadius) * seekTime / maxTime + 2*handleRadius}px`;
+    const timer = document.getElementById("timer");
+    if (timer) timer.innerHTML = formatTime(seekTime);
 
     const buffered = sourceBuffer.buffered;
     const videoTime = seekTime - timestampOffset;
@@ -1068,7 +1077,7 @@ async function main() {
 
         if (paused || !sourceBuffer || !sourceBuffer.buffered.length) return;
         const adjustedTime = player.currentTime + timestampOffset;
-        const width = seekContainer.getBoundingClientRect().width;
+        const width = getSeekWidth();
         maxTime = (Date.now() - timeOrigin) / 1000 + timeOriginPlayerTime + timestampOffset;
 
         if (videoMode === "vod" && width) seekSlider.style.width = `${(width - 2*handleRadius) * adjustedTime / maxTime + 2*handleRadius}px`;
