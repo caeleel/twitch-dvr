@@ -286,17 +286,17 @@ function hideCursor() {
     }
 }
 
+let cursorTimer = null;
 function showCursor() {
+    if (cursorTimer) clearTimeout(cursorTimer);
     if (document.getElementById("player-container")) {
         document.getElementById("player-container").style.cursor = '';
         document.getElementById("controls").style.display = 'block';
     }
 }
 
-let cursorTimer = null;
 function showCursorForAWhile() {
     showCursor();
-    if (cursorTimer) clearTimeout(cursorTimer);
     cursorTimer = setTimeout(hideCursor, 2000);
 }
 
@@ -310,9 +310,6 @@ function toggleFullscreen() {
         if (element.requestFullscreen) {
             element.requestFullscreen();
         }
-
-        showCursorForAWhile();
-        document.addEventListener('mousemove', showCursorForAWhile);
     }
 }
 
@@ -323,6 +320,9 @@ document.addEventListener('fullscreenchange', () => {
         if (document.getElementById("controls")) {
             document.getElementById("controls").style.display = '';
         }
+    } else {
+        showCursorForAWhile();
+        document.addEventListener('mousemove', showCursorForAWhile);
     }
 });
 
@@ -824,8 +824,8 @@ async function switchChannel() {
     }
 
     const savedVariant = localStorage.getItem("twitch-dvr:variant");
-    setVariant(savedVariant ? parseInt(savedVariant) : 0);
     player.src = url;
+    setVariant(savedVariant ? parseInt(savedVariant) : 0);
     
     vodURLs = [];
     vodVariants = await getVODUrl(channel, clientId);
@@ -1037,6 +1037,7 @@ async function main() {
                     installPlayer();
                 } else {
                     playerContainer.style.display = '';
+                    switchMode('live');
                     pause();
                     switchChannel();
                 }
@@ -1047,6 +1048,7 @@ async function main() {
                 }
                 if (playerContainer && playerContainer.style) {
                     playerContainer.style.display = 'none';
+                    switchMode('live');
                     pause();
                 }
             }
