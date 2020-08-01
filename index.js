@@ -875,7 +875,7 @@ async function switchChannel() {
 function isInChannel(url) {
     const urlParts = url.split("/");
     if (urlParts.length === 3 && (urlParts[2] === "videos" || urlParts[2] === "schedule" || urlParts[2] === "about")) return true;
-    return urlParts.length === 2 && url !== "/" && url !== "/directory";
+    return urlParts.length === 2 && url !== "/" && url !== "/directory" && url !== "/search";
 }
 
 const seekStep = 10;
@@ -1102,7 +1102,7 @@ async function main() {
         const adIframe = document.getElementById("amazon-video-ads-iframe");
         if (adIframe) adIframe.remove();
         
-        const videos = document.querySelectorAll("video");
+        const videos = document.querySelectorAll(".video-player__container video");
         for (const video of videos) {
             if (video.id !== "player" && !video.paused) {
                 video.pause();
