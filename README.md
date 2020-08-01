@@ -18,3 +18,7 @@ To install `twitch-dvr` for development, simply go to `chrome://extensions` (or 
 4. The latency of the DVR player is currently slightly worse than the default player on low-latency mode. This should be fairly easy to correct. As a side note from my testing, Twitch's latency optimizations on the server end are pretty impressive.
 5. Playback speed is not supported. The author does not personally have a use case for this but it shouldn't be hard to implement this.
 6. The UI is of course not as polished as the real Twitch player. The controls use a very naive heuristic that they pop up when your cursor is in the bottom third of the player, and a similar heuristic is used for the "Switch Player" button at the top.
+
+## MP4 Muxing
+
+This extension was initially written to use Twitch's .ts segments directly with Media Source Extensions, however only Edge on Windows supports this. As a result, we now use [mux.js](https://github.com/videojs/mux.js/) to transmux .ts video to `mp4`. It would be nice to support pure `mp2t` mode for Edge, but unfortunately the fact that `mp4` has timestamps that always start at 0 vs `ts` having timestamps of actual stream time means that supporting both is a bit clunky.

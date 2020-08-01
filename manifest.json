@@ -1,11 +1,11 @@
 {
     "name": "Twitch DVR player",
-    "version": "0.9",
+    "version": "1.02",
     "description": "Replaces the standard twitch player with a custom one that supports DVR.",
     "permissions": ["https://twitch.tv/*"],
     "content_scripts": [{
         "matches": ["https://www.twitch.tv/*"],
-        "js": ["index.js"],
+        "js": ["mux.js", "index.js"],
         "run_at": "document_idle"
     }],
     "icons": {

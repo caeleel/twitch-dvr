@@ -271,12 +271,14 @@ let seekSlider = null;
 let generation = 0;
 let vodOffset = 0;
 let videoMode = 'live';
+let transmuxer = null;
 let playerType = localStorage.getItem("twitch-dvr:player-type") ? localStorage.getItem("twitch-dvr:player-type") : "dvr";
 
 const bufferLimit = 200;
 const handleRadius = 7.25;
 const vodDeadzone = 15;
 const vodDeadzoneBuffer = 15;
+const vodSegmentLen = 10;
 
 function hideCursor() {
     if (paused) return;
@@ -367,12 +369,10 @@ async function getVODUrl(channel, clientId) {
 }
 
 async function bufferVOD(url, time, first) {
-    const vodSegmentLen = 10;
     const startGeneration = generation;
 
     const idx = Math.floor(time / vodSegmentLen);
     const baseURL = vodURLs[variantIdx];
-    totalElapsed = time;
     vodOffset = time % vodSegmentLen;
 
     if (!sourceBuffer.buffered.length || sourceBuffer.buffered.end(0) - player.currentTime < 0) {
@@ -393,7 +393,7 @@ let lastFetched = new Set();
 let paused = true;
 let firstTime = true;
 let totalElapsed = 0;
-let timestampOffset = 0;
+let vodOrigin = 0;
 
 async function bufferLive(url) {
     const resp = await fetch(url);
@@ -513,6 +513,7 @@ function afterBufferUpdate() {
 
             if (realDiff - playerDiff * 1000 > 200) {
                 pause();
+                resetTransmuxer();
                 play();
                 return;
             }
@@ -522,13 +523,10 @@ function afterBufferUpdate() {
     lastRealTime = Date.now();
 
     if (firstTime && numBuffers) {
-        const startTime = sourceBuffer.buffered.start(0) + (videoMode === "vod" ? vodOffset : 0);
-
-        timestampOffset = totalElapsed - startTime;
-        player.currentTime = startTime;
+        player.currentTime = sourceBuffer.buffered.start(0) + (videoMode === "vod" ? vodOffset : 0);
         if (videoMode === "live") {
+            timeOriginPlayerTime = totalElapsed;
             timeOrigin = Date.now();
-            timeOriginPlayerTime = startTime;
         }
         if (!paused) setTimeout(() => player.play(), 0);
         firstTime = false;
@@ -648,7 +646,7 @@ function seekToTime(seekTime) {
     if (timer) timer.innerHTML = formatTime(seekTime);
 
     const buffered = sourceBuffer.buffered;
-    const videoTime = seekTime - timestampOffset;
+    const videoTime = seekTime - vodOrigin;
     if (videoMode === "vod" && buffered.length && buffered.start(0) <= videoTime && buffered.end(0) >= videoTime) {
         player.currentTime = videoTime;
         return;
@@ -656,7 +654,9 @@ function seekToTime(seekTime) {
     clearTimers();
 
     switchMode('vod');
+    vodOrigin = seekTime - (seekTime % vodSegmentLen);
     firstTime = true;
+    resetTransmuxer();
     bufferVOD(vodVariants[variantIdx], seekTime, true);
 }
 
@@ -716,8 +716,10 @@ async function downloadSegments(startGeneration, lastPromise, segments) {
             if (startGeneration !== generation) break;
             await lastPromise;
             if (startGeneration !== generation) break;
-            arrayOfBlobs.push(bytes);
-            appendToSourceBuffer();
+            if (transmuxer) {
+                transmuxer.push(new Uint8Array(bytes));
+                transmuxer.flush();
+            }
             count++;
         } catch(e) {
             console.log(`Warning: failed to fetch: ${e}, stopping download early`)
@@ -752,6 +754,26 @@ function setVolume(vol) {
     volume.style.width = `${vol * 100 + handleRadius * 2}px`;
 }
 
+let firstSegment = false;
+
+function resetTransmuxer() {
+    if (transmuxer) transmuxer.off('data');
+    transmuxer = new muxjs.mp4.Transmuxer();
+    firstSegment = true;
+    transmuxer.on('data', (segment) => {
+        if (firstSegment) {
+            const data = new Uint8Array(segment.initSegment.byteLength + segment.data.byteLength);
+            data.set(segment.initSegment, 0);
+            data.set(segment.data, segment.initSegment.byteLength);
+            arrayOfBlobs.push(data);
+            firstSegment = false;
+        } else {
+            arrayOfBlobs.push(new Uint8Array(segment.data));
+        }
+        appendToSourceBuffer();
+    });
+}
+
 function setVariant(idx) {
     if (!document.getElementById("quality-picker")) return;
     idx = Math.max(0, Math.min(idx, variants.length - 1));
@@ -762,6 +784,7 @@ function setVariant(idx) {
     if (!variants[idx]) return;
     document.getElementById("quality").innerText = variants[idx].resolution;
 
+    resetTransmuxer();
     if (videoMode === "live") {
         const variant = variants[idx];
         lastFetched = new Set();
@@ -771,7 +794,7 @@ function setVariant(idx) {
             play();
         } else {
             mediaSrc.addEventListener("sourceopen", function() {
-                sourceBuffer = mediaSrc.addSourceBuffer(`video/mp2t; codecs=${variant.codecs}`);
+                sourceBuffer = mediaSrc.addSourceBuffer(`video/mp4; codecs=${variant.codecs}`);
                 sourceBuffer.addEventListener("updateend", () => {
                     afterBufferUpdate();
                     appendToSourceBuffer();
@@ -785,7 +808,7 @@ function setVariant(idx) {
         }
     } else {
         const variant = vodVariants[idx];
-        const currTime = player.currentTime + timestampOffset;
+        const currTime = player.currentTime + vodOrigin;
         clearTimers();
         bufferVOD(variant, currTime, true);
     }
@@ -794,6 +817,7 @@ function setVariant(idx) {
 function switchMode(mode) {
     videoMode = mode;
     budgetEnd = Date.now();
+    if (!document.getElementById("live")) return;
     document.getElementById("live").className = "control " + mode;
     if (mode === 'live') seekSlider.style.width = '100%';
 }
@@ -812,6 +836,9 @@ async function switchChannel() {
     if (playerType === 'twitch') return;
 
     mediaSrc = new MediaSource();
+    if (player.src) {
+        URL.revokeObjectURL(player.src);
+    }
     const url = URL.createObjectURL(mediaSrc);
     sourceBuffer = null;
     switchMode('live');
@@ -857,14 +884,15 @@ function keyboardHandler(e) {
     if (!player) return;
     switch (e.keyCode) {
         case 37:
-            let newTime = player.currentTime - seekStep + timestampOffset;
+            let newTime = videoMode === "vod" ? vodOrigin + player.currentTime - seekStep : maxTime - seekStep;
             if (maxTime - newTime < vodDeadzone + vodDeadzoneBuffer) {
                 newTime = maxTime - vodDeadzoneBuffer - vodDeadzone;
             }
             seekToTime(newTime);
             break;
         case 39:
-            seekToTime(player.currentTime + seekStep + timestampOffset);
+            if (videoMode === "live") break;
+            seekToTime(vodOrigin + player.currentTime + seekStep);
             break;
         case 32:
             const nodeName = e.target.nodeName;
@@ -882,12 +910,13 @@ async function main() {
     let updateSeekLabel = null;
     let timerEl = null;
     let playerContainer = null;
+    let installationTimer = null;
 
     function installPlayer() {
         const videoContainer = document.querySelector(".video-player__container");
 
         if (!videoContainer) {
-            setTimeout(installPlayer, 1000);
+            installationTimer = setTimeout(installPlayer, 1000);
             return;
         }
 
@@ -1059,6 +1088,11 @@ async function main() {
                     playerContainer.style.display = 'none';
                     switchMode('live');
                     pause();
+                } else {
+                    if (installationTimer) {
+                        clearTimeout(installationTimer);
+                        installationTimer = null;
+                    }
                 }
             }
         }
@@ -1076,9 +1110,9 @@ async function main() {
         }
 
         if (paused || !sourceBuffer || !sourceBuffer.buffered.length) return;
-        const adjustedTime = player.currentTime + timestampOffset;
         const width = getSeekWidth();
-        maxTime = (Date.now() - timeOrigin) / 1000 + timeOriginPlayerTime + timestampOffset;
+        maxTime = (Date.now() - timeOrigin) / 1000 + timeOriginPlayerTime;
+        const adjustedTime = videoMode === "vod" ? vodOrigin + player.currentTime : maxTime;
 
         if (videoMode === "vod" && width) seekSlider.style.width = `${(width - 2*handleRadius) * adjustedTime / maxTime + 2*handleRadius}px`;
         timerEl.innerText = formatTime(adjustedTime);
