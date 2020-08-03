@@ -261,6 +261,7 @@ addStyle(`
 
 
 let mediaSrc = new MediaSource();
+let sourceBuffer = null;
 let arrayOfBlobs = [];
 let player = null;
 let volume = null;
@@ -917,6 +918,10 @@ async function main() {
 
         if (!videoContainer) {
             installationTimer = setTimeout(installPlayer, 1000);
+            return;
+        }
+
+        if (!isInChannel(document.location.pathname)) {
             return;
         }
 
