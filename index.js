@@ -13,14 +13,6 @@ addStyle(`
         user-select: none;
     }
 
-    #player-toggle {
-        position: absolute;
-        top: 0;
-        width: 100%;
-        height: 33%;
-        user-select: none;
-    }
-
     #player-container.twitch {
         display: none;
     }
@@ -38,10 +30,6 @@ addStyle(`
         top: 20px;
         right: 20px;
         border-radius: 9px;
-    }
-
-    #player-toggle:hover #toggle {
-        display: block;
     }
 
     #control-hover {
@@ -273,15 +261,20 @@ let generation = 0;
 let vodOffset = 0;
 let videoMode = 'live';
 let transmuxer = null;
+let inChannelPage = false;
 let playerType = localStorage.getItem("twitch-dvr:player-type") ? localStorage.getItem("twitch-dvr:player-type") : "dvr";
 
 const bufferLimit = 200;
 const handleRadius = 7.25;
 const vodDeadzone = 15;
 const vodDeadzoneBuffer = 15;
-const vodSegmentLen = 10;
+let vodSegmentLen = 10;
 
-function hideCursor() {
+function hideToggle() {
+    if (document.getElementById("toggle")) {
+        document.getElementById("toggle").style.display = '';
+    }
+
     if (paused) return;
     if (document.getElementById("player-container")) {
         document.getElementById("player-container").style.cursor = 'none';
@@ -289,19 +282,25 @@ function hideCursor() {
     }
 }
 
-let cursorTimer = null;
-function showCursor() {
-    if (cursorTimer) clearTimeout(cursorTimer);
-    cursorTimer = null;
+let toggleTimer = null;
+
+function showToggle() {
+    if (toggleTimer) clearTimeout(toggleTimer);
+    toggleTimer = null;
+    if (document.getElementById("toggle")) {
+        document.getElementById("toggle").style.display = 'block';
+    }
+
     if (document.getElementById("player-container")) {
         document.getElementById("player-container").style.cursor = '';
         document.getElementById("controls").style.display = 'block';
     }
 }
 
-function showCursorForAWhile() {
-    showCursor();
-    cursorTimer = setTimeout(hideCursor, 2000);
+function showToggleForAWhile() {
+    if (!inChannelPage) return;
+    showToggle();
+    toggleTimer = setTimeout(hideToggle, 3000);
 }
 
 function toggleFullscreen() {
@@ -316,19 +315,6 @@ function toggleFullscreen() {
         }
     }
 }
-
-document.addEventListener('fullscreenchange', () => {
-    if (!document.fullscreenElement) {
-        document.removeEventListener('mousemove', showCursorForAWhile);
-        showCursor();
-        if (document.getElementById("controls")) {
-            document.getElementById("controls").style.display = '';
-        }
-    } else {
-        showCursorForAWhile();
-        document.addEventListener('mousemove', showCursorForAWhile);
-    }
-});
 
 async function getVODUrl(channel, clientId) {
     let resp = await fetch('https://gql.twitch.tv/gql', {
@@ -366,7 +352,18 @@ async function getVODUrl(channel, clientId) {
 
     resp = await fetch(`https://usher.ttvnw.net/vod/${vodId}.m3u8?allow_source=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
     const text = await resp.text();
-    return parseMasterManifest(text);
+    const manifests = parseMasterManifest(text);
+
+    resp = await fetch(manifests[0].url)
+    const manifest = await resp.text()
+    for (const line of manifest.split("\n")) {
+        if (line.substring(0, 8) === "#EXTINF:") {
+            vodSegmentLen = parseFloat(line.substring(8).split(",")[0]);
+            break;
+        }
+    }
+
+    return manifests;
 }
 
 async function bufferVOD(url, time, first) {
@@ -610,11 +607,6 @@ function play() {
         paused = false;
         firstTime = true;
     }
-    if (document.fullscreenElement) {
-        showCursorForAWhile();
-    } else {
-        document.getElementById("controls").style.display = "";
-    }
 }
 
 function getSeekWidth() {
@@ -699,7 +691,7 @@ function togglePlayer() {
     }
     
     localStorage.setItem("twitch-dvr:player-type", playerType);
-    document.querySelector("#player-toggle #toggle").innerText = `Switch to ${typeName} player`;
+    document.querySelector("#toggle").innerText = `Switch to ${typeName} player`;
     document.getElementById("player-container").className = playerType;
 }
 
@@ -927,8 +919,8 @@ async function main() {
 
         paused = true;
         playerToggle = document.createElement('div');
-        playerToggle.id = "player-toggle";
-        playerToggle.innerHTML = `<div id="toggle">${playerType === 'dvr' ? 'Switch to Twitch Player' : 'Switch to DVR Player'}</div>`;
+        playerToggle.id = "toggle";
+        playerToggle.innerHTML = playerType === 'dvr' ? 'Switch to Twitch Player' : 'Switch to DVR Player';
 
         playerContainer = document.createElement("div");
         playerContainer.id = "player-container";
@@ -1000,6 +992,7 @@ async function main() {
         `;
         videoContainer.appendChild(playerContainer);
         videoContainer.appendChild(playerToggle);
+        videoContainer.addEventListener("mousemove", showToggleForAWhile);
         player = document.getElementById("player");
         volume = document.getElementById("volume-slider");
         seekTooltip = document.getElementById("seek-tooltip");
@@ -1009,12 +1002,11 @@ async function main() {
         document.getElementById("play").addEventListener("click", play);
         document.getElementById("pause").addEventListener("click", pause);
         document.getElementById("fullscreen").addEventListener("click", toggleFullscreen);
-        document.getElementById("player-toggle").addEventListener("dblclick", toggleFullscreen);
         playerContainer.addEventListener("dblclick", toggleFullscreen);
         document.getElementById("quality").addEventListener("click", togglePicker);
         document.getElementById("quality").addEventListener("dblclick", (e) => e.stopPropagation());
         document.getElementById("live").addEventListener("click", golive);
-        document.querySelector("#player-toggle #toggle").addEventListener("click", togglePlayer);
+        document.getElementById("toggle").addEventListener("click", togglePlayer);
         const savedVol = localStorage.getItem("twitch-dvr:vol");
         player.volume = savedVol ? parseFloat(savedVol) : 1;
         setVolume(player.volume);
@@ -1059,7 +1051,7 @@ async function main() {
     }
 
     let currentUrl = document.location.pathname;
-    let inChannelPage = isInChannel(currentUrl);
+    inChannelPage = isInChannel(currentUrl);
     if (inChannelPage) installPlayer();
 
     setInterval(() => {
@@ -1070,12 +1062,10 @@ async function main() {
             }
             currentUrl = document.location.pathname;
             inChannelPage = isInChannel(currentUrl);
-            const toggle = document.getElementById("player-toggle");
             if (inChannelPage) {
                 if (currentUrl.split('/')[1] === prevChannel) {
                     return;
                 }
-                if (toggle) toggle.style.display = '';
                 if (!document.getElementById("player")) {
                     installPlayer();
                 } else {
@@ -1085,7 +1075,6 @@ async function main() {
                     switchChannel();
                 }
             } else {
-                if (toggle) toggle.style.display = 'none';
                 if (sourceBuffer) {
                     clearTimers();
                 }
