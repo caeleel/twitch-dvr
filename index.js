@@ -362,12 +362,22 @@ async function getVODUrl(channel, clientId) {
     const text = await resp.text();
     const manifests = parseMasterManifest(text);
 
-    resp = await fetch(manifests[0].url)
-    const manifest = await resp.text()
+    resp = await fetch(manifests[0].url);
+    const manifest = await resp.text();
+    const histogram = {};
+    let maxCount = 0;
     for (const line of manifest.split("\n")) {
         if (line.substring(0, 8) === "#EXTINF:") {
-            vodSegmentLen = parseFloat(line.substring(8).split(",")[0]);
-            break;
+            const dur = parseFloat(line.substring(8).split(",")[0]);
+            if (histogram[dur]) {
+                histogram[dur]++;
+            } else {
+                histogram[dur] = 1;
+            }
+            if (histogram[dur] > maxCount) {
+                maxCount++;
+                vodSegmentLen = dur;
+            }
         }
     }
 
@@ -909,9 +919,6 @@ function createClip() {
 
 function keyboardHandler(e) {
     if (!player) return;
-    console.log(e);
-    console.log(e.keyCode);
-    console.log(e.which);
     switch (e.keyCode) {
         case 37:
             let newTime = videoMode === "vod" ? vodOrigin + player.currentTime - seekStep : maxTime - seekStep;
