@@ -136,6 +136,7 @@ addStyle(`
         box-sizing: border-box;
         padding: 4px 6px;
         text-align: center;
+        color: black;
     }
 
     #tooltip-text {
@@ -209,6 +210,7 @@ addStyle(`
     }
 
     #clip {
+        display: none;
         bottom: 20px;
         height: 20px;
         width: 20px;
@@ -264,13 +266,15 @@ let seekTooltip = null;
 let seekTooltipText = null;
 let seekContainer = null;
 let seekSlider = null;
+let currSegmentType = null;
+let isTransitioningTypes = false;
 let generation = 0;
 let vodOffset = 0;
 let videoMode = 'live';
 let transmuxer = null;
 let inChannelPage = false;
 let playerInstalled = false;
-let playerType = localStorage.getItem("twitch-dvr:player-type") ? localStorage.getItem("twitch-dvr:player-type") : "dvr";
+let playerType = localStorage.getItem('twitch-dvr:player-type') ? localStorage.getItem('twitch-dvr:player-type') : 'dvr';
 
 const bufferLimit = 200;
 const handleRadius = 7.25;
@@ -279,14 +283,14 @@ const vodDeadzoneBuffer = 15;
 let vodSegmentLen = 10;
 
 function hideToggle() {
-    if (document.getElementById("toggle")) {
-        document.getElementById("toggle").style.display = '';
+    if (document.getElementById('toggle')) {
+        document.getElementById('toggle').style.display = '';
     }
 
     if (paused) return;
-    if (document.getElementById("player-container")) {
-        document.getElementById("player-container").style.cursor = 'none';
-        document.getElementById("controls").style.display = 'none';
+    if (document.getElementById('player-container')) {
+        document.getElementById('player-container').style.cursor = 'none';
+        document.getElementById('controls').style.display = 'none';
     }
 }
 
@@ -295,13 +299,13 @@ let toggleTimer = null;
 function showToggle() {
     if (toggleTimer) clearTimeout(toggleTimer);
     toggleTimer = null;
-    if (document.getElementById("toggle")) {
-        document.getElementById("toggle").style.display = 'block';
+    if (document.getElementById('toggle')) {
+        document.getElementById('toggle').style.display = 'block';
     }
 
-    if (document.getElementById("player-container")) {
-        document.getElementById("player-container").style.cursor = '';
-        document.getElementById("controls").style.display = 'block';
+    if (document.getElementById('player-container')) {
+        document.getElementById('player-container').style.cursor = '';
+        document.getElementById('controls').style.display = 'block';
     }
 }
 
@@ -317,7 +321,7 @@ function toggleFullscreen() {
             document.exitFullscreen();
         }
     } else {
-        const element = document.getElementById("player-container");
+        const element = document.getElementById('player-container');
         if (element.requestFullscreen) {
             element.requestFullscreen();
         }
@@ -331,16 +335,16 @@ async function getVODUrl(channel, clientId) {
             'client-id': clientId,
         },
         body: JSON.stringify([{
-            operationName: "HomeOfflineCarousel",
+            operationName: 'HomeOfflineCarousel',
             variables: {
                 channelLogin: channel,
                 includeTrailerUpsell: false,
-                trailerUpsellVideoID: ""
+                trailerUpsellVideoID: ''
             },
             extensions: {
                 persistedQuery: {
                     version: 1,
-                    sha256Hash: "0c97fdcb4e0366b25ae35eb89cc932ecbbb056f663f92735d53776602e4e94c5",
+                    sha256Hash: '0c97fdcb4e0366b25ae35eb89cc932ecbbb056f663f92735d53776602e4e94c5',
                 }
             },
         }]),
@@ -366,9 +370,9 @@ async function getVODUrl(channel, clientId) {
     const manifest = await resp.text();
     const histogram = {};
     let maxCount = 0;
-    for (const line of manifest.split("\n")) {
-        if (line.substring(0, 8) === "#EXTINF:") {
-            const dur = parseFloat(line.substring(8).split(",")[0]);
+    for (const line of manifest.split('\n')) {
+        if (line.substring(0, 8) === '#EXTINF:') {
+            const dur = parseFloat(line.substring(8).split(',')[0]);
             if (histogram[dur]) {
                 histogram[dur]++;
             } else {
@@ -398,7 +402,7 @@ async function bufferVOD(url, time, first) {
     const toBuffer = first ? Math.floor(bufferAmount / vodSegmentLen) : Math.max(0, Math.floor((bufferAmount - sourceBuffer.buffered.end(0) + player.currentTime) / vodSegmentLen));
     const toDownload = [];
     for (let i = idx; i < idx + toBuffer; i++) {
-        toDownload.push(`${baseURL}${i}.ts`);
+        toDownload.push({ url: `${baseURL}${i}.ts`, type: 'vod' });
     }
     const count = await downloadSegments(startGeneration, Promise.resolve(), toDownload);
     if (generation !== startGeneration) return;
@@ -417,15 +421,16 @@ async function bufferLive(url) {
     const segments = [];
     const fetched = new Set();
 
-    const lines = m3u8.split("\n");
+    const lines = m3u8.split('\n');
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         let segment = null;
-        if (line.substring(0, 8) === "#EXTINF:") {
-            segment = lines[i+1];
-        } else if (line.substring(0, 23) === "#EXT-X-TWITCH-PREFETCH:") {
-            segment = line.substring(23);
-        } else if (line.substring(0, 25) === "#EXT-X-TWITCH-TOTAL-SECS:") {
+        if (line.substring(0, 8) === '#EXTINF:') {
+            const isLive = line.split(',')[1] === 'live';
+            segment = { url: lines[i+1], type: isLive ? 'live' : 'ad' };
+        } else if (line.substring(0, 23) === '#EXT-X-TWITCH-PREFETCH:') {
+            segment = { url: line.substring(23), type: 'live' };
+        } else if (line.substring(0, 25) === '#EXT-X-TWITCH-TOTAL-SECS:') {
             totalElapsed = parseFloat(line.substring(25));
         }
 
@@ -447,30 +452,30 @@ async function bufferLive(url) {
 }
 
 function parseMasterManifest(m3u8) {
-    const lines = m3u8.split("\n");
+    const lines = m3u8.split('\n');
     const variants = [];
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        if (line.substring(0, 18) === "#EXT-X-STREAM-INF:") {
-            const parts = line.substring(18).split(",");
+        if (line.substring(0, 18) === '#EXT-X-STREAM-INF:') {
+            const parts = line.substring(18).split(',');
             const variant = {};
             for (let j = 0; j < parts.length; j++) {
                 const part = parts[j];
                 const vals = part.split('=');
                 switch (vals[0]) {
-                    case "BANDWIDTH":
+                    case 'BANDWIDTH':
                         variant.bandwidth = parseInt(vals[1]);
                         break;
-                    case "RESOLUTION":
+                    case 'RESOLUTION':
                         variant.resolution = `${vals[1].split('x')[1]}p`;
                         break;
-                    case "CODECS":
+                    case 'CODECS':
                         variant.codecs = `${vals[1]},${parts[j+1]}`;
                         break;
-                    case "VIDEO":
+                    case 'VIDEO':
                         variant.name = vals[1];
                         break;
-                    case "FRAME-RATE":
+                    case 'FRAME-RATE':
                         variant.framerate = Math.ceil(parseFloat(vals[1]));
                         break;
                 }
@@ -512,7 +517,7 @@ async function appendToSourceBuffer() {
 
     await Promise.resolve();
 
-    if (mediaSrc.readyState === "open" && sourceBuffer && sourceBuffer.updating === false && arrayOfBlobs.length > 0) {
+    if (mediaSrc.readyState === 'open' && sourceBuffer && sourceBuffer.updating === false && arrayOfBlobs.length > 0) {
         const blob = arrayOfBlobs.shift();
         sourceBuffer.appendBuffer(blob);
     }
@@ -524,26 +529,13 @@ let lastRealTime = -1;
 function afterBufferUpdate() {
     if (!sourceBuffer) return;
 
-    const numBuffers = sourceBuffer.buffered.length;
-    if (numBuffers > 1) {
-        if (lastRealTime > 0) {
-            const realDiff = Date.now() - lastRealTime;
-            const playerDiff = player.currentTime - lastPlayerTime;
-
-            if (realDiff - playerDiff * 1000 > 200) {
-                pause();
-                resetTransmuxer();
-                play();
-                return;
-            }
-        }
-    }
     lastPlayerTime = player.currentTime;
     lastRealTime = Date.now();
+    const numBuffers = player.buffered.length;
 
     if (firstTime && numBuffers) {
-        player.currentTime = sourceBuffer.buffered.start(0) + (videoMode === "vod" ? vodOffset : 0);
-        if (videoMode === "live") {
+        player.currentTime = sourceBuffer.buffered.start(0) + (videoMode === 'vod' ? vodOffset : 0);
+        if (videoMode === 'live') {
             timeOriginPlayerTime = totalElapsed;
             timeOrigin = Date.now();
         }
@@ -572,16 +564,20 @@ let timeOriginPlayerTime = 0;
 
 function clearTimers() {
     if (sourceBuffer) {
-        sourceBuffer.abort();
-        let maxBuffered = 0;
-        for (let i = 0; i < sourceBuffer.buffered.length; i++) {
-            if (sourceBuffer.buffered.end(i) > maxBuffered) {
-                maxBuffered = sourceBuffer.buffered.end(i);
+        try {
+            sourceBuffer.abort();
+            let maxBuffered = 0;
+            for (let i = 0; i < sourceBuffer.buffered.length; i++) {
+                if (sourceBuffer.buffered.end(i) > maxBuffered) {
+                    maxBuffered = sourceBuffer.buffered.end(i);
+                }
             }
-        }
 
-        if (maxBuffered > 0) {
-            sourceBuffer.remove(0, maxBuffered);
+            if (maxBuffered > 0) {
+                sourceBuffer.remove(0, maxBuffered);
+            }
+        } catch(e) {
+            // pass
         }
     }
     generation++;
@@ -597,12 +593,12 @@ function clearTimers() {
 }
 
 function pause() {
-    if (!document.getElementById("pause")) return;
+    if (!document.getElementById('pause')) return;
 
-    document.getElementById("pause").style.display = "none";
-    document.getElementById("play").style.display = "block";
+    document.getElementById('pause').style.display = 'none';
+    document.getElementById('play').style.display = 'block';
 
-    if (videoMode === "vod") {
+    if (videoMode === 'vod') {
         player.pause();
         paused = true;
         return;
@@ -611,13 +607,13 @@ function pause() {
     lastFetched = new Set();
     clearTimers();
     paused = true;
-    document.getElementById("controls").style.display = "block";
+    document.getElementById('controls').style.display = 'block';
 }
 
 function play() {
-    document.getElementById("play").style.display = "none";
-    document.getElementById("pause").style.display = "block";
-    if (videoMode === "vod") {
+    document.getElementById('play').style.display = 'none';
+    document.getElementById('pause').style.display = 'block';
+    if (videoMode === 'vod') {
         player.play();
         paused = false;
         return;
@@ -631,7 +627,7 @@ function play() {
 }
 
 function getSeekWidth() {
-    const container = document.getElementById("player-container");
+    const container = document.getElementById('player-container');
     if (!container) return 0;
     return container.getBoundingClientRect().width - 450;
 }
@@ -656,12 +652,12 @@ function seekToTime(seekTime) {
 
     const width = getSeekWidth();
     seekSlider.style.width = `${(width - 2*handleRadius) * seekTime / maxTime + 2*handleRadius}px`;
-    const timer = document.getElementById("timer");
+    const timer = document.getElementById('timer');
     if (timer) timer.innerHTML = formatTime(seekTime);
 
     const buffered = sourceBuffer.buffered;
     const videoTime = seekTime - vodOrigin;
-    if (videoMode === "vod" && buffered.length && buffered.start(0) <= videoTime && buffered.end(0) >= videoTime) {
+    if (videoMode === 'vod' && buffered.length && buffered.start(0) <= videoTime && buffered.end(0) >= videoTime) {
         player.currentTime = videoTime;
         return;
     }
@@ -675,7 +671,7 @@ function seekToTime(seekTime) {
 }
 
 function golive() {
-    if (videoMode === "live") return;
+    if (videoMode === 'live') return;
 
     clearTimers();
     switchMode('live');
@@ -684,19 +680,19 @@ function golive() {
 }
 
 function togglePicker() {
-    const picker = document.getElementById("quality-picker");
-    const pickerOpen = picker.style.display === "block";
+    const picker = document.getElementById('quality-picker');
+    const pickerOpen = picker.style.display === 'block';
     if (pickerOpen) {
-        document.removeEventListener("click", togglePicker);
+        document.removeEventListener('click', togglePicker);
     } else {
-        setTimeout(() => document.addEventListener("click", togglePicker), 1);
+        setTimeout(() => document.addEventListener('click', togglePicker), 1);
     }
-    picker.style.display = pickerOpen ? "none" : "block";
+    picker.style.display = pickerOpen ? 'none' : 'block';
 }
 
 function playNative() {
-    for (const video of document.querySelectorAll(".video-player__container video")) {
-        if (video.id !== "player") {
+    for (const video of document.querySelectorAll('.video-player__container video')) {
+        if (video.id !== 'player') {
             video.play();
             break;
         }
@@ -716,9 +712,9 @@ function togglePlayer() {
         switchChannel();
     }
 
-    localStorage.setItem("twitch-dvr:player-type", playerType);
-    document.querySelector("#toggle").innerText = `Switch to ${typeName} player`;
-    document.getElementById("player-container").className = playerType;
+    localStorage.setItem('twitch-dvr:player-type', playerType);
+    document.querySelector('#toggle').innerText = `Switch to ${typeName} player`;
+    document.getElementById('player-container').className = playerType;
 }
 
 let bufferPromise = null;
@@ -728,7 +724,13 @@ async function downloadSegments(startGeneration, lastPromise, segments) {
     for (const segment of segments) {
         if (startGeneration !== generation) break;
         try {
-            const resp = await fetch(segment);
+            if (currSegmentType == null) {
+                currSegmentType = segment.type;
+            } else if (currSegmentType !== segment.type) {
+                isTransitioningTypes = true;
+                break;
+            }
+            const resp = await fetch(segment.url);
             if (startGeneration !== generation) break;
 
             const bytes = await resp.arrayBuffer();
@@ -742,6 +744,10 @@ async function downloadSegments(startGeneration, lastPromise, segments) {
             count++;
         } catch(e) {
             console.log(`Warning: failed to fetch: ${e}, stopping download early`)
+            if (videoMode === "live") {
+                pause();
+                switchChannel();
+            }
             break;
         }
     }
@@ -776,6 +782,8 @@ function setVolume(vol) {
 let firstSegment = false;
 
 function resetTransmuxer() {
+    currSegmentType = null;
+    isTransitioningTypes = false;
     if (transmuxer) transmuxer.off('data');
     transmuxer = new muxjs.mp4.Transmuxer();
     firstSegment = true;
@@ -794,17 +802,17 @@ function resetTransmuxer() {
 }
 
 function setVariant(idx) {
-    if (!document.getElementById("quality-picker")) return;
+    if (!document.getElementById('quality-picker')) return;
     idx = Math.max(0, Math.min(idx, variants.length - 1));
-    localStorage.setItem("twitch-dvr:variant", idx);
-    document.getElementById("quality-picker").style.display = "none";
+    localStorage.setItem('twitch-dvr:variant', idx);
+    document.getElementById('quality-picker').style.display = 'none';
     variantIdx = idx
 
     if (!variants[idx]) return;
-    document.getElementById("quality").innerText = variants[idx].resolution;
+    document.getElementById('quality').innerText = variants[idx].resolution;
 
     resetTransmuxer();
-    if (videoMode === "live") {
+    if (videoMode === 'live') {
         const variant = variants[idx];
         lastFetched = new Set();
         if (sourceBuffer) {
@@ -812,14 +820,16 @@ function setVariant(idx) {
             budgetEnd = Date.now();
             play();
         } else {
-            mediaSrc.addEventListener("sourceopen", function() {
+            mediaSrc.addEventListener('sourceopen', function() {
                 sourceBuffer = mediaSrc.addSourceBuffer(`video/mp4; codecs=${variant.codecs}`);
-                sourceBuffer.addEventListener("updateend", () => {
+                sourceBuffer.addEventListener('updateend', () => {
                     afterBufferUpdate();
                     appendToSourceBuffer();
                 });
-                sourceBuffer.addEventListener("error", (buffer, ev) => {
-                    console.warn("Failed to append to buffer");
+                sourceBuffer.addEventListener('error', (buffer, ev) => {
+                    pause();
+                    switchChannel();
+                    console.warn('Failed to append to buffer');
                 });
                 budgetEnd = Date.now();
                 play();
@@ -836,8 +846,9 @@ function setVariant(idx) {
 function switchMode(mode) {
     videoMode = mode;
     budgetEnd = Date.now();
-    if (!document.getElementById("live")) return;
-    document.getElementById("live").className = "control " + mode;
+    resetTransmuxer();
+    if (!document.getElementById('live')) return;
+    document.getElementById('live').className = 'control ' + mode;
     if (mode === 'live') seekSlider.style.width = '100%';
 }
 
@@ -858,13 +869,12 @@ async function switchChannel() {
     if (player.src) {
         URL.revokeObjectURL(player.src);
     }
-    const url = URL.createObjectURL(mediaSrc);
     sourceBuffer = null;
     switchMode('live');
 
     const channel = document.location.pathname.split('/')[1];
     const clientId = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
-    document.getElementById("quality-picker").innerHTML = "";
+    document.getElementById('quality-picker').innerHTML = '';
     try {
         variants = await getLiveM3U8(channel, clientId);
     } catch(e) {
@@ -875,18 +885,19 @@ async function switchChannel() {
 
     for (let i = 0; i < variants.length; i++) {
         const v = variants[i];
-        const picker = document.createElement("div");
-        picker.className = "picker";
+        const picker = document.createElement('div');
+        picker.className = 'picker';
         picker.innerText = v.resolution;
-        picker.addEventListener("click", () => {
+        picker.addEventListener('click', () => {
             setVariant(i);
         });
-        document.getElementById("quality-picker").appendChild(picker);
+        document.getElementById('quality-picker').appendChild(picker);
     }
 
-    const savedVariant = localStorage.getItem("twitch-dvr:variant");
-    player.src = url;
+    const savedVariant = localStorage.getItem('twitch-dvr:variant');
+    player.src = URL.createObjectURL(mediaSrc);
     setVariant(savedVariant ? parseInt(savedVariant) : 0);
+    document.getElementById("clip").style.display = '';
 
     vodURLs = [];
     vodVariants = await getVODUrl(channel, clientId);
@@ -898,22 +909,27 @@ async function switchChannel() {
 }
 
 function isInChannel(url) {
-    const urlParts = url.split("/");
-    if (urlParts.length === 3 && (urlParts[2] === "videos" || urlParts[2] === "schedule" || urlParts[2] === "about")) return true;
-    return urlParts.length === 2 && url !== "/" && url !== "/directory" && url !== "/search";
+    const urlParts = url.split('/');
+    if (urlParts.length === 3 && (urlParts[2] === 'videos' || urlParts[2] === 'schedule' || urlParts[2] === 'about')) return true;
+    return urlParts.length === 2 && url !== '/' && url !== '/directory' && url !== '/search';
 }
 
 const seekStep = 10;
+function getClipButton() {
+    const buttons = document.querySelectorAll('.tw-core-button--overlay');
+    for (const button of buttons) {
+        if (button.dataset.aTarget === 'player-clip-button') {
+            return button;
+        }
+    }
+    return null;
+}
 
 function createClip() {
     playNative();
     setTimeout(() => {
-        const buttons = document.querySelectorAll('.tw-core-button--overlay');
-        for (const button of buttons) {
-            if (button.dataset.aTarget === "player-clip-button") {
-                button.click();
-            }
-        }
+        const clipButton = getClipButton();
+        if (clipButton) clipButton.click();
     }, 100);
 }
 
@@ -921,19 +937,19 @@ function keyboardHandler(e) {
     if (!player) return;
     switch (e.keyCode) {
         case 37:
-            let newTime = videoMode === "vod" ? vodOrigin + player.currentTime - seekStep : maxTime - seekStep;
+            let newTime = videoMode === 'vod' ? vodOrigin + player.currentTime - seekStep : maxTime - seekStep;
             if (maxTime - newTime < vodDeadzone + vodDeadzoneBuffer) {
                 newTime = maxTime - vodDeadzoneBuffer - vodDeadzone;
             }
             seekToTime(newTime);
             break;
         case 39:
-            if (videoMode === "live") break;
+            if (videoMode === 'live') break;
             seekToTime(vodOrigin + player.currentTime + seekStep);
             break;
         case 32:
             const nodeName = e.target.nodeName;
-            if (nodeName !== "DIV" && nodeName !== "BODY" && nodeName !== "VIDEO") break;
+            if (nodeName !== 'DIV' && nodeName !== 'BODY' && nodeName !== 'VIDEO') break;
             if (paused) play();
             else pause();
             e.stopPropagation();
@@ -957,14 +973,14 @@ function uninstallPlayer() {
     }
 }
 
-document.addEventListener("keydown", keyboardHandler);
+document.addEventListener('keydown', keyboardHandler);
 
 async function main() {
     let updateSeekLabel = null;
     let timerEl = null;
 
     function installPlayer() {
-        const videoContainer = document.querySelector(".video-player__container");
+        const videoContainer = document.querySelector('.video-player__container');
 
         if (!videoContainer) {
             installationTimer = setTimeout(installPlayer, 1000);
@@ -977,78 +993,78 @@ async function main() {
 
         paused = true;
         playerToggle = document.createElement('div');
-        playerToggle.id = "toggle";
+        playerToggle.id = 'toggle';
         playerToggle.innerHTML = playerType === 'dvr' ? 'Switch to Twitch Player' : 'Switch to DVR Player';
 
-        playerContainer = document.createElement("div");
-        playerContainer.id = "player-container";
+        playerContainer = document.createElement('div');
+        playerContainer.id = 'player-container';
         playerContainer.className = playerType;
         playerContainer.innerHTML = `
-            <video id="player" width="100%" height="100%" playsinline"></video>
-            <div id="control-hover">
-            <div id="controls">
-                <div id="play" class="control">
-                    <svg width="16" height="20" viewBox="0 0 16 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M1 19V1L15 10L1 19Z" fill="white"/>
-                    <path d="M1.27038 0.579411C1.11652 0.480504 0.920943 0.473499 0.760406 0.561144C0.599869 0.648789 0.5 0.817096 0.5 1V19C0.5 19.1829 0.599869 19.3512 0.760406 19.4389C0.920943 19.5265 1.11652 19.5195 1.27038 19.4206L15.2704 10.4206C15.4135 10.3286 15.5 10.1701 15.5 10C15.5 9.82987 15.4135 9.67141 15.2704 9.57941L1.27038 0.579411Z" stroke="black" stroke-opacity="0.2" stroke-linejoin="round"/>
+            <video id='player' width='100%' height='100%' playsinline'></video>
+            <div id='control-hover'>
+            <div id='controls'>
+                <div id='play' class='control'>
+                    <svg width='16' height='20' viewBox='0 0 16 20' fill='none' xmlns='http://www.w3.org/2000/svg'>
+                    <path d='M1 19V1L15 10L1 19Z' fill='white'/>
+                    <path d='M1.27038 0.579411C1.11652 0.480504 0.920943 0.473499 0.760406 0.561144C0.599869 0.648789 0.5 0.817096 0.5 1V19C0.5 19.1829 0.599869 19.3512 0.760406 19.4389C0.920943 19.5265 1.11652 19.5195 1.27038 19.4206L15.2704 10.4206C15.4135 10.3286 15.5 10.1701 15.5 10C15.5 9.82987 15.4135 9.67141 15.2704 9.57941L1.27038 0.579411Z' stroke='black' stroke-opacity='0.2' stroke-linejoin='round'/>
                     </svg>
                 </div>
-                <div id="pause" class="control">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M1 1H7V19H1V1Z" fill="white"/>
-                    <path d="M13 1H19V19H13V1Z" fill="white"/>
-                    <path d="M1 0.5H0.5V1V19V19.5H1H7H7.5V19V1V0.5H7H1ZM13 0.5H12.5V1V19V19.5H13H19H19.5V19V1V0.5H19H13Z" stroke="black" stroke-opacity="0.2"/>
+                <div id='pause' class='control'>
+                    <svg width='20' height='20' viewBox='0 0 20 20' fill='none' xmlns='http://www.w3.org/2000/svg'>
+                    <path d='M1 1H7V19H1V1Z' fill='white'/>
+                    <path d='M13 1H19V19H13V1Z' fill='white'/>
+                    <path d='M1 0.5H0.5V1V19V19.5H1H7H7.5V19V1V0.5H7H1ZM13 0.5H12.5V1V19V19.5H13H19H19.5V19V1V0.5H19H13Z' stroke='black' stroke-opacity='0.2'/>
                     </svg>
                 </div>
-                <div id="volume" class="control">
-                    <svg width="11" height="18" viewBox="0 0 11 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M1 6V12H5L10 17V1L5 6H1Z" fill="white"/>
-                    <path d="M0.5 12C0.5 12.2761 0.723858 12.5 1 12.5H4.79289L9.64645 17.3536C9.78945 17.4966 10.0045 17.5393 10.1913 17.4619C10.3782 17.3846 10.5 17.2022 10.5 17V1C10.5 0.797769 10.3782 0.615451 10.1913 0.53806C10.0045 0.46067 9.78945 0.503448 9.64645 0.646447L4.79289 5.5H1C0.723858 5.5 0.5 5.72386 0.5 6V12Z" stroke="black" stroke-opacity="0.2" stroke-linejoin="round"/>
+                <div id='volume' class='control'>
+                    <svg width='11' height='18' viewBox='0 0 11 18' fill='none' xmlns='http://www.w3.org/2000/svg'>
+                    <path d='M1 6V12H5L10 17V1L5 6H1Z' fill='white'/>
+                    <path d='M0.5 12C0.5 12.2761 0.723858 12.5 1 12.5H4.79289L9.64645 17.3536C9.78945 17.4966 10.0045 17.5393 10.1913 17.4619C10.3782 17.3846 10.5 17.2022 10.5 17V1C10.5 0.797769 10.3782 0.615451 10.1913 0.53806C10.0045 0.46067 9.78945 0.503448 9.64645 0.646447L4.79289 5.5H1C0.723858 5.5 0.5 5.72386 0.5 6V12Z' stroke='black' stroke-opacity='0.2' stroke-linejoin='round'/>
                     </svg>
                 </div>
-                <div id="volume-container" class="control">
-                    <div class="slider-empty control"></div>
-                    <div id="volume-slider" class="slider control">
-                        <div class="slider-filled control"></div>
-                        <div class="slider-handle control"></div>
+                <div id='volume-container' class='control'>
+                    <div class='slider-empty control'></div>
+                    <div id='volume-slider' class='slider control'>
+                        <div class='slider-filled control'></div>
+                        <div class='slider-handle control'></div>
                     </div>
                 </div>
-                <div id="seek-outer" class="control">
-                    <div id="seek-tooltip" class="tooltip control">
-                        <div id="tooltip-text" class="tooltip-text"></div>
-                        <div id="tooltip-triangle" class="triangle"></div>
+                <div id='seek-outer' class='control'>
+                    <div id='seek-tooltip' class='tooltip control'>
+                        <div id='tooltip-text' class='tooltip-text'></div>
+                        <div id='tooltip-triangle' class='triangle'></div>
                     </div>
-                    <div id="seek-container" class="control">
-                        <div class="slider-empty control"></div>
-                        <div id="seek-slider" class="slider control">
-                            <div class="slider-filled control"></div>
-                            <div class="slider-handle control"></div>
+                    <div id='seek-container' class='control'>
+                        <div class='slider-empty control'></div>
+                        <div id='seek-slider' class='slider control'>
+                            <div class='slider-filled control'></div>
+                            <div class='slider-handle control'></div>
                         </div>
                     </div>
                 </div>
 
-                <div id="timer" class="control"></div>
-                <div id="live" class="live control">
-                    <div class="tooltip control" id="go-live">
-                        <div id="go-live-text" class="tooltip-text">Go to live</div>
-                        <div id="go-live-triangle" class="triangle"></div>
+                <div id='timer' class='control'></div>
+                <div id='live' class='live control'>
+                    <div class='tooltip control' id='go-live'>
+                        <div id='go-live-text' class='tooltip-text'>Go to live</div>
+                        <div id='go-live-triangle' class='triangle'></div>
                     </div>
                 </div>
-                <div id="quality-picker" class="control"></div>
-                <div id="quality" class="control"></div>
-                <div id="clip" class="control">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M14.594 4.495L14.009 2.585L15.922 2L16.507 3.91L14.594 4.495V4.495ZM11.14 3.46L11.725 5.371L13.638 4.787L13.053 2.877L11.14 3.46V3.46ZM8.856 6.247L8.272 4.337L10.184 3.753L10.769 5.663L8.856 6.247V6.247ZM5.403 5.213L5.987 7.123L7.9 6.54L7.315 4.629L5.403 5.213V5.213ZM2.534 6.09L3.118 8L5.031 7.416L4.446 5.506L2.534 6.089V6.09ZM5 9H3V16C3 16.5304 3.21071 17.0391 3.58579 17.4142C3.96086 17.7893 4.46957 18 5 18H15C15.5304 18 16.0391 17.7893 16.4142 17.4142C16.7893 17.0391 17 16.5304 17 16V9H15V16H5V9Z" fill="white"/>
-                    <path d="M8 9H6V11H8V9ZM9 9H11V11H9V9ZM14 9H12V11H14V9Z" fill="white"/>
+                <div id='quality-picker' class='control'></div>
+                <div id='quality' class='control'></div>
+                <div id='clip' class='control'>
+                    <svg width='20' height='20' viewBox='0 0 20 20' fill='none' xmlns='http://www.w3.org/2000/svg'>
+                    <path d='M14.594 4.495L14.009 2.585L15.922 2L16.507 3.91L14.594 4.495V4.495ZM11.14 3.46L11.725 5.371L13.638 4.787L13.053 2.877L11.14 3.46V3.46ZM8.856 6.247L8.272 4.337L10.184 3.753L10.769 5.663L8.856 6.247V6.247ZM5.403 5.213L5.987 7.123L7.9 6.54L7.315 4.629L5.403 5.213V5.213ZM2.534 6.09L3.118 8L5.031 7.416L4.446 5.506L2.534 6.089V6.09ZM5 9H3V16C3 16.5304 3.21071 17.0391 3.58579 17.4142C3.96086 17.7893 4.46957 18 5 18H15C15.5304 18 16.0391 17.7893 16.4142 17.4142C16.7893 17.0391 17 16.5304 17 16V9H15V16H5V9Z' fill='white'/>
+                    <path d='M8 9H6V11H8V9ZM9 9H11V11H9V9ZM14 9H12V11H14V9Z' fill='white'/>
                     </svg>
                 </div>
-                <div id="fullscreen" class="control">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M19 19V13H17V17H13V19H19Z" fill="white"/>
-                    <path d="M19 1V7H17V3H13V1H19Z" fill="white"/>
-                    <path d="M1 1V7H3V3H7V1H1Z" fill="white"/>
-                    <path d="M1 13V19H7V17H3V13H1Z" fill="white"/>
-                    <path d="M1 12.5H0.5V13V19V19.5H1H7H7.5V19V17V16.5H7H3.5V13V12.5H3H1ZM19.5 13V12.5H19H17H16.5V13V16.5H13H12.5V17V19V19.5H13H19H19.5V19V13ZM19 7.5H19.5V7V1V0.5H19H13H12.5V1V3V3.5H13H16.5V7V7.5H17H19ZM0.5 7V7.5H1H3H3.5V7V3.5H7H7.5V3V1V0.5H7H1H0.5V1V7Z" stroke="black" stroke-opacity="0.2"/>
+                <div id='fullscreen' class='control'>
+                    <svg width='20' height='20' viewBox='0 0 20 20' fill='none' xmlns='http://www.w3.org/2000/svg'>
+                    <path d='M19 19V13H17V17H13V19H19Z' fill='white'/>
+                    <path d='M19 1V7H17V3H13V1H19Z' fill='white'/>
+                    <path d='M1 1V7H3V3H7V1H1Z' fill='white'/>
+                    <path d='M1 13V19H7V17H3V13H1Z' fill='white'/>
+                    <path d='M1 12.5H0.5V13V19V19.5H1H7H7.5V19V17V16.5H7H3.5V13V12.5H3H1ZM19.5 13V12.5H19H17H16.5V13V16.5H13H12.5V17V19V19.5H13H19H19.5V19V13ZM19 7.5H19.5V7V1V0.5H19H13H12.5V1V3V3.5H13H16.5V7V7.5H17H19ZM0.5 7V7.5H1H3H3.5V7V3.5H7H7.5V3V1V0.5H7H1H0.5V1V7Z' stroke='black' stroke-opacity='0.2'/>
                     </svg>
                 </div>
             </div>
@@ -1056,29 +1072,29 @@ async function main() {
         `;
         videoContainer.appendChild(playerContainer);
         videoContainer.appendChild(playerToggle);
-        videoContainer.addEventListener("mousemove", showToggleForAWhile);
-        player = document.getElementById("player");
-        volume = document.getElementById("volume-slider");
-        seekTooltip = document.getElementById("seek-tooltip");
-        seekTooltipText = document.getElementById("tooltip-text");
-        seekContainer = document.getElementById("seek-container");
-        seekSlider = document.getElementById("seek-slider");
-        document.getElementById("play").addEventListener("click", play);
-        document.getElementById("pause").addEventListener("click", pause);
-        document.getElementById("fullscreen").addEventListener("click", toggleFullscreen);
-        playerContainer.addEventListener("dblclick", toggleFullscreen);
-        document.getElementById("quality").addEventListener("click", togglePicker);
-        document.getElementById("quality").addEventListener("dblclick", (e) => e.stopPropagation());
-        document.getElementById("live").addEventListener("click", golive);
-        document.getElementById("toggle").addEventListener("click", togglePlayer);
-        document.getElementById("clip").addEventListener("click", createClip);
-        const savedVol = localStorage.getItem("twitch-dvr:vol");
+        videoContainer.addEventListener('mousemove', showToggleForAWhile);
+        player = document.getElementById('player');
+        volume = document.getElementById('volume-slider');
+        seekTooltip = document.getElementById('seek-tooltip');
+        seekTooltipText = document.getElementById('tooltip-text');
+        seekContainer = document.getElementById('seek-container');
+        seekSlider = document.getElementById('seek-slider');
+        document.getElementById('play').addEventListener('click', play);
+        document.getElementById('pause').addEventListener('click', pause);
+        document.getElementById('fullscreen').addEventListener('click', toggleFullscreen);
+        playerContainer.addEventListener('dblclick', toggleFullscreen);
+        document.getElementById('quality').addEventListener('click', togglePicker);
+        document.getElementById('quality').addEventListener('dblclick', (e) => e.stopPropagation());
+        document.getElementById('live').addEventListener('click', golive);
+        document.getElementById('toggle').addEventListener('click', togglePlayer);
+        document.getElementById('clip').addEventListener('click', createClip);
+        const savedVol = localStorage.getItem('twitch-dvr:vol');
         player.volume = savedVol ? parseFloat(savedVol) : 1;
         setVolume(player.volume);
         switchChannel();
 
-        const volumeContainer = document.getElementById("volume-container");
-        volumeContainer.addEventListener("mousedown", (ev) => {
+        const volumeContainer = document.getElementById('volume-container');
+        volumeContainer.addEventListener('mousedown', (ev) => {
             let leftSide = ev.pageX - ev.offsetX;
             setVolume((ev.offsetX - handleRadius) / 100);
 
@@ -1086,14 +1102,14 @@ async function main() {
                 setVolume((ev.pageX - leftSide - handleRadius) / 100);
             }
             const mouseUp = (ev) => {
-                document.removeEventListener("mousemove", mouseMove);
-                document.removeEventListener("mouseUp", mouseUp);
+                document.removeEventListener('mousemove', mouseMove);
+                document.removeEventListener('mouseUp', mouseUp);
             }
-            document.addEventListener("mousemove", mouseMove);
-            document.addEventListener("mouseup", mouseUp);
+            document.addEventListener('mousemove', mouseMove);
+            document.addEventListener('mouseup', mouseUp);
         });
 
-        timerEl = document.getElementById("timer");
+        timerEl = document.getElementById('timer');
 
         let lastSeekEv = null;
         updateSeekLabel = (ev) => {
@@ -1105,14 +1121,14 @@ async function main() {
 
             const adjustedTime = getTimeAtOffset(ev.offsetX);
             if (maxTime - adjustedTime < vodDeadzone + vodDeadzoneBuffer) {
-                seekTooltipText.innerText = "Live";
+                seekTooltipText.innerText = 'Live';
             } else {
                 seekTooltipText.innerText = formatTime(adjustedTime);
             }
         };
 
-        seekContainer.addEventListener("mousemove", updateSeekLabel);
-        seekContainer.addEventListener("click", seek);
+        seekContainer.addEventListener('mousemove', updateSeekLabel);
+        seekContainer.addEventListener('click', seek);
     }
 
     let currentUrl = document.location.pathname;
@@ -1131,7 +1147,7 @@ async function main() {
                 if (currentUrl.split('/')[1] === prevChannel) {
                     return;
                 }
-                if (!document.getElementById("player")) {
+                if (!document.getElementById('player')) {
                     installPlayer();
                 } else {
                     playerContainer.style.display = '';
@@ -1149,23 +1165,38 @@ async function main() {
         if (!inChannelPage || !playerInstalled) return;
         if (playerType === 'twitch') return;
 
-        const adIframe = document.getElementById("amazon-video-ads-iframe");
+        const adIframe = document.getElementById('amazon-video-ads-iframe');
         if (adIframe) adIframe.remove();
 
-        const videos = document.querySelectorAll(".video-player__container video");
+        const videos = document.querySelectorAll('.video-player__container video');
         for (const video of videos) {
-            if (video.id !== "player" && !video.paused) {
-                video.pause();
+            if (video.id !== 'player' && !video.paused) {
+                setTimeout(() => {
+                    if (getClipButton()) document.getElementById('clip').style.display = 'block';
+                    video.pause();
+                }, 500);
             }
         }
 
-        if (paused || !sourceBuffer || !sourceBuffer.buffered.length) return;
+        if (paused || !sourceBuffer || !player.buffered.length) return;
         const width = getSeekWidth();
         maxTime = (Date.now() - timeOrigin) / 1000 + timeOriginPlayerTime;
-        const adjustedTime = videoMode === "vod" ? vodOrigin + player.currentTime : maxTime;
+        const adjustedTime = videoMode === 'vod' ? vodOrigin + player.currentTime : maxTime;
 
-        if (videoMode === "vod" && width) seekSlider.style.width = `${(width - 2*handleRadius) * adjustedTime / maxTime + 2*handleRadius}px`;
+        if (videoMode === 'vod' && width) seekSlider.style.width = `${(width - 2*handleRadius) * adjustedTime / maxTime + 2*handleRadius}px`;
         timerEl.innerText = formatTime(adjustedTime);
+
+        if (isTransitioningTypes && lastRealTime > 0) {
+            const realDiff = Date.now() - lastRealTime;
+            const playerDiff = player.currentTime - lastPlayerTime;
+
+            if (realDiff - playerDiff * 1000 > 200) {
+                pause();
+                resetTransmuxer();
+                play();
+                return;
+            }
+        }
 
         if (seekTooltip.offsetParent) updateSeekLabel();
     }, 1000);

@@ -1,8 +1,8 @@
 {
     "name": "Twitch DVR player",
-    "version": "1.03",
+    "version": "1.3",
     "description": "Replaces the standard twitch player with a custom one that supports DVR.",
-    "permissions": ["https://twitch.tv/*"],
+    "permissions": ["https://*.twitch.tv/*", "https://*.ttvnw.net/*", "https://dqrpb9wgowsf5.cloudfront.net/*"],
     "content_scripts": [{
         "matches": ["https://www.twitch.tv/*"],
         "js": ["mux.js", "index.js"],
