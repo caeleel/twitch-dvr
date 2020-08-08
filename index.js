@@ -262,6 +262,7 @@ let vodOffset = 0;
 let videoMode = 'live';
 let transmuxer = null;
 let inChannelPage = false;
+let playerInstalled = false;
 let playerType = localStorage.getItem("twitch-dvr:player-type") ? localStorage.getItem("twitch-dvr:player-type") : "dvr";
 
 const bufferLimit = 200;
@@ -480,6 +481,9 @@ async function getLiveM3U8(channel, clientId) {
     const sig = json.sig;
 
     resp = await fetch(`https://usher.ttvnw.net/api/channel/hls/${channel}.m3u8?allow_source=true&fast_bread=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
+    if (resp.status !== 200) {
+        throw new Error('Stream not live');
+    }
     const text = await resp.text();
 
     const parsed = parseMasterManifest(text);
@@ -558,7 +562,7 @@ function clearTimers() {
                 maxBuffered = sourceBuffer.buffered.end(i);
             }
         }
-        
+
         if (maxBuffered > 0) {
             sourceBuffer.remove(0, maxBuffered);
         }
@@ -689,7 +693,7 @@ function togglePlayer() {
         playerType = 'dvr';
         switchChannel();
     }
-    
+
     localStorage.setItem("twitch-dvr:player-type", playerType);
     document.querySelector("#toggle").innerText = `Switch to ${typeName} player`;
     document.getElementById("player-container").className = playerType;
@@ -771,7 +775,7 @@ function setVariant(idx) {
     if (!document.getElementById("quality-picker")) return;
     idx = Math.max(0, Math.min(idx, variants.length - 1));
     localStorage.setItem("twitch-dvr:variant", idx);
-    document.getElementById("quality-picker").style.display = "none";  
+    document.getElementById("quality-picker").style.display = "none";
     variantIdx = idx
 
     if (!variants[idx]) return;
@@ -835,11 +839,17 @@ async function switchChannel() {
     const url = URL.createObjectURL(mediaSrc);
     sourceBuffer = null;
     switchMode('live');
-    
+
     const channel = document.location.pathname.split('/')[1];
     const clientId = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
     document.getElementById("quality-picker").innerHTML = "";
-    variants = await getLiveM3U8(channel, clientId);
+    try {
+        variants = await getLiveM3U8(channel, clientId);
+    } catch(e) {
+        uninstallPlayer();
+        return;
+    }
+    playerInstalled = true;
 
     for (let i = 0; i < variants.length; i++) {
         const v = variants[i];
@@ -855,7 +865,7 @@ async function switchChannel() {
     const savedVariant = localStorage.getItem("twitch-dvr:variant");
     player.src = url;
     setVariant(savedVariant ? parseInt(savedVariant) : 0);
-    
+
     vodURLs = [];
     vodVariants = await getVODUrl(channel, clientId);
     for (const variant of vodVariants) {
@@ -897,13 +907,27 @@ function keyboardHandler(e) {
     }
 }
 
+let playerContainer = null;
+let installationTimer = null;
+function uninstallPlayer() {
+    playerInstalled = false;
+    if (playerContainer && playerContainer.style) {
+        playerContainer.style.display = 'none';
+        switchMode('live');
+        pause();
+    } else {
+        if (installationTimer) {
+            clearTimeout(installationTimer);
+            installationTimer = null;
+        }
+    }
+}
+
 document.addEventListener("keydown", keyboardHandler);
 
 async function main() {
     let updateSeekLabel = null;
     let timerEl = null;
-    let playerContainer = null;
-    let installationTimer = null;
 
     function installPlayer() {
         const videoContainer = document.querySelector(".video-player__container");
@@ -1078,24 +1102,15 @@ async function main() {
                 if (sourceBuffer) {
                     clearTimers();
                 }
-                if (playerContainer && playerContainer.style) {
-                    playerContainer.style.display = 'none';
-                    switchMode('live');
-                    pause();
-                } else {
-                    if (installationTimer) {
-                        clearTimeout(installationTimer);
-                        installationTimer = null;
-                    }
-                }
+                uninstallPlayer();
             }
         }
-        if (!inChannelPage) return;
+        if (!inChannelPage || !playerInstalled) return;
         if (playerType === 'twitch') return;
 
         const adIframe = document.getElementById("amazon-video-ads-iframe");
         if (adIframe) adIframe.remove();
-        
+
         const videos = document.querySelectorAll(".video-player__container video");
         for (const video of videos) {
             if (video.id !== "player" && !video.paused) {
