@@ -62,7 +62,7 @@ addStyle(`
         width: 8px;
         border-radius: 4px;
         bottom: 26px;
-        right: 130px;
+        right: 142px;
     }
 
     #live.live, #live.vod:hover {
@@ -208,10 +208,17 @@ addStyle(`
         left: 60px;
     }
 
+    #clip {
+        bottom: 20px;
+        height: 20px;
+        width: 20px;
+        right: 50px;
+    }
+
     #quality {
         bottom: 20px;
         height: 20px;
-        right: 60px;
+        right: 80px;
         box-sizing: border-box;
         padding: 4px 6px;
         background-color: rgba(0, 0, 0, 0.8);
@@ -230,7 +237,7 @@ addStyle(`
 
     #quality-picker {
         bottom: 42px;
-        right: 60px;
+        right: 80px;
         background-color: rgba(0, 0, 0, 0.8);
         color: white;
         padding: 6px 0;
@@ -677,18 +684,23 @@ function togglePicker() {
     picker.style.display = pickerOpen ? "none" : "block";
 }
 
+function playNative() {
+    for (const video of document.querySelectorAll(".video-player__container video")) {
+        if (video.id !== "player") {
+            video.play();
+            break;
+        }
+    }
+
+}
+
 function togglePlayer() {
     let typeName = 'Twitch';
     if (playerType === 'dvr') {
         typeName = 'DVR';
         playerType = 'twitch';
         pause();
-        for (const video of document.querySelectorAll(".video-player__container video")) {
-            if (video.id !== "player") {
-                video.play();
-                break;
-            }
-        }
+        playNative();
     } else {
         playerType = 'dvr';
         switchChannel();
@@ -883,8 +895,23 @@ function isInChannel(url) {
 
 const seekStep = 10;
 
+function createClip() {
+    playNative();
+    setTimeout(() => {
+        const buttons = document.querySelectorAll('.tw-core-button--overlay');
+        for (const button of buttons) {
+            if (button.dataset.aTarget === "player-clip-button") {
+                button.click();
+            }
+        }
+    }, 100);
+}
+
 function keyboardHandler(e) {
     if (!player) return;
+    console.log(e);
+    console.log(e.keyCode);
+    console.log(e.which);
     switch (e.keyCode) {
         case 37:
             let newTime = videoMode === "vod" ? vodOrigin + player.currentTime - seekStep : maxTime - seekStep;
@@ -1002,6 +1029,12 @@ async function main() {
                 </div>
                 <div id="quality-picker" class="control"></div>
                 <div id="quality" class="control"></div>
+                <div id="clip" class="control">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M14.594 4.495L14.009 2.585L15.922 2L16.507 3.91L14.594 4.495V4.495ZM11.14 3.46L11.725 5.371L13.638 4.787L13.053 2.877L11.14 3.46V3.46ZM8.856 6.247L8.272 4.337L10.184 3.753L10.769 5.663L8.856 6.247V6.247ZM5.403 5.213L5.987 7.123L7.9 6.54L7.315 4.629L5.403 5.213V5.213ZM2.534 6.09L3.118 8L5.031 7.416L4.446 5.506L2.534 6.089V6.09ZM5 9H3V16C3 16.5304 3.21071 17.0391 3.58579 17.4142C3.96086 17.7893 4.46957 18 5 18H15C15.5304 18 16.0391 17.7893 16.4142 17.4142C16.7893 17.0391 17 16.5304 17 16V9H15V16H5V9Z" fill="white"/>
+                    <path d="M8 9H6V11H8V9ZM9 9H11V11H9V9ZM14 9H12V11H14V9Z" fill="white"/>
+                    </svg>
+                </div>
                 <div id="fullscreen" class="control">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M19 19V13H17V17H13V19H19Z" fill="white"/>
@@ -1031,6 +1064,7 @@ async function main() {
         document.getElementById("quality").addEventListener("dblclick", (e) => e.stopPropagation());
         document.getElementById("live").addEventListener("click", golive);
         document.getElementById("toggle").addEventListener("click", togglePlayer);
+        document.getElementById("clip").addEventListener("click", createClip);
         const savedVol = localStorage.getItem("twitch-dvr:vol");
         player.volume = savedVol ? parseFloat(savedVol) : 1;
         setVolume(player.volume);
