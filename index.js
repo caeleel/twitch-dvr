@@ -43,7 +43,7 @@ addStyle(`
         display: block;
     }
 
-    #mute-overlay {
+    .overlay {
         display: none;
         position: absolute;
         top: 0;
@@ -52,10 +52,17 @@ addStyle(`
         height: 100%;
         justify-content: center;
         align-items: center;
-        background-color: rgba(0, 0, 0, 0.3);
+        background-color: rgba(0, 0, 0, 0.4);
         color: white;
+        flex-direction: column;
         font-weight: 600;
         font-size: 20px;
+    }
+
+    .overlay div {
+        text-align: center;
+        width: 600px;
+        margin-bottom: 20px;
     }
 
     video {
@@ -288,6 +295,7 @@ let videoMode = 'live';
 let transmuxer = null;
 let inChannelPage = false;
 let playerInstalled = false;
+let makingClip = false;
 let playerType = localStorage.getItem('twitch-dvr:player-type') ? localStorage.getItem('twitch-dvr:player-type') : 'dvr';
 
 const bufferLimit = 200;
@@ -716,14 +724,17 @@ function togglePicker() {
     picker.style.display = pickerOpen ? 'none' : 'block';
 }
 
-function playNative() {
+function playNative(mute) {
+    let muted = null;
     for (const video of document.querySelectorAll('.video-player__container video')) {
         if (video.id !== 'player') {
+            muted = video.muted;
+            if (mute) video.muted = true;
             video.play();
             break;
         }
     }
-
+    return muted;
 }
 
 function togglePlayer() {
@@ -873,6 +884,10 @@ function switchMode(mode) {
     if (!document.getElementById('live')) return;
     document.getElementById('live').className = 'control ' + mode;
     if (mode === 'live') seekSlider.style.width = '100%';
+    const clipButton = document.getElementById('clip');
+    if (!clipButton) return;
+    if (mode === 'vod') clipButton.style.display = '';
+    else if (!document.querySelector('.anon-user')) clipButton.style.display = 'block';
 }
 
 function formatTime(secs) {
@@ -920,7 +935,7 @@ async function switchChannel() {
     const savedVariant = localStorage.getItem('twitch-dvr:variant');
     player.src = URL.createObjectURL(mediaSrc);
     setVariant(savedVariant ? parseInt(savedVariant) : 0);
-    document.getElementById("clip").style.display = '';
+    if (!document.querySelector('.anon-user')) document.getElementById('clip').style.display = 'block';
 
     vodURLs = [];
     vodVariants = await getVODUrl(channel, clientId);
@@ -938,22 +953,35 @@ function isInChannel(url) {
 }
 
 const seekStep = 10;
-function getClipButton() {
+async function getClipButton(click) {
+    makingClip = true;
+    const wasMuted = playNative(true);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    let found = false;
     const buttons = document.querySelectorAll('.tw-core-button--overlay');
     for (const button of buttons) {
         if (button.dataset.aTarget === 'player-clip-button') {
-            return button;
+            found = true;
+            if (click) button.click();
         }
     }
-    return null;
+
+    for (const video of document.querySelectorAll('.video-player__container video')) {
+        if (video.id !== 'player' && !video.paused) {
+            video.pause();
+            video.muted = wasMuted;
+            break;
+        }
+    }
+    makingClip = false;
+    return found;
 }
 
-function createClip() {
-    playNative();
-    setTimeout(() => {
-        const clipButton = getClipButton();
-        if (clipButton) clipButton.click();
-    }, 100);
+async function createClip() {
+    if (!await getClipButton(/* click = */ true)) {
+        document.getElementById('clip-overlay').style.display = 'flex';
+    }
 }
 
 function keyboardHandler(e) {
@@ -1092,7 +1120,15 @@ async function main() {
                 </div>
             </div>
             </div>
-            <div id='mute-overlay'><div>Click to unmute</div></div>
+            <div id='mute-overlay' class='overlay'><div>Click to unmute</div></div>
+            <div id='clip-overlay' class='overlay'>
+                <div>
+                    Clipping failed. This could be because the channel has clipping disabled,
+                    or the native Twitch player is in the middle of an ad :(. If the Twitch player is in an ad,
+                    you'll have to either refresh the page or switch over to it to clip.
+                </div>
+                <div>OK</div>
+            </div>
         `;
         videoContainer.appendChild(playerContainer);
         videoContainer.appendChild(playerToggle);
@@ -1115,6 +1151,9 @@ async function main() {
         document.getElementById('mute-overlay').addEventListener('click', () => {
             document.getElementById('mute-overlay').style.display = 'none';
             player.muted = false;
+        });
+        document.getElementById('clip-overlay').addEventListener('click', () => {
+            document.getElementById('clip-overlay').style.display = 'none';
         });
         const savedVol = localStorage.getItem('twitch-dvr:vol');
         player.volume = savedVol ? parseFloat(savedVol) : 1;
@@ -1196,13 +1235,12 @@ async function main() {
         const adIframe = document.getElementById('amazon-video-ads-iframe');
         if (adIframe) adIframe.remove();
 
-        const videos = document.querySelectorAll('.video-player__container video');
-        for (const video of videos) {
-            if (video.id !== 'player' && !video.paused) {
-                setTimeout(() => {
-                    if (getClipButton()) document.getElementById('clip').style.display = 'block';
+        if (!makingClip) {
+            const videos = document.querySelectorAll('.video-player__container video');
+            for (const video of videos) {
+                if (video.id !== 'player' && !video.paused) {
                     video.pause();
-                }, 500);
+                }
             }
         }
 
