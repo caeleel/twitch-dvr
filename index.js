@@ -43,6 +43,21 @@ addStyle(`
         display: block;
     }
 
+    #mute-overlay {
+        display: none;
+        position: absolute;
+        top: 0;
+        cursor: pointer;
+        width: 100%;
+        height: 100%;
+        justify-content: center;
+        align-items: center;
+        background-color: rgba(0, 0, 0, 0.3);
+        color: white;
+        font-weight: 600;
+        font-size: 20px;
+    }
+
     video {
         position: absolute;
     }
@@ -419,19 +434,21 @@ async function bufferLive(url) {
     const m3u8 = await resp.text();
     const segments = [];
     const fetched = new Set();
+    let canHaveDiscontinuity = false;
 
     const lines = m3u8.split('\n');
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         let segment = null;
         if (line.substring(0, 8) === '#EXTINF:') {
+            canHaveDiscontinuity = true;
             const isLive = line.split(',')[1] === 'live';
             segment = { url: lines[i+1], type: isLive ? 'live' : 'ad' };
         } else if (line.substring(0, 23) === '#EXT-X-TWITCH-PREFETCH:') {
             segment = { url: line.substring(23), type: 'live' };
         } else if (line.substring(0, 25) === '#EXT-X-TWITCH-TOTAL-SECS:') {
             totalElapsed = parseFloat(line.substring(25));
-        } else if (line === "#EXT-X-DISCONTINUITY") {
+        } else if (line === "#EXT-X-DISCONTINUITY" && canHaveDiscontinuity) {
             const discontinuityID = lines[i-1];
             fetched.add(discontinuityID);
             if (lastFetched.has(discontinuityID)) continue;
@@ -543,7 +560,11 @@ function afterBufferUpdate() {
             timeOriginPlayerTime = totalElapsed;
             timeOrigin = Date.now();
         }
-        if (!paused) setTimeout(() => player.play(), 0);
+        if (!paused) setTimeout(() => player.play().catch((e) => {
+            player.muted = true;
+            document.getElementById("mute-overlay").style.display = "flex";
+            player.play();
+        }), 0);
         firstTime = false;
     } else if (numBuffers && player.currentTime < sourceBuffer.buffered.start(0)) {
         player.currentTime = sourceBuffer.buffered.start(0);
@@ -657,7 +678,7 @@ function seekToTime(seekTime) {
     const width = getSeekWidth();
     seekSlider.style.width = `${(width - 2*handleRadius) * seekTime / maxTime + 2*handleRadius}px`;
     const timer = document.getElementById('timer');
-    if (timer) timer.innerHTML = formatTime(seekTime);
+    if (timer) timer.innerText = formatTime(seekTime);
 
     const buffered = sourceBuffer.buffered;
     const videoTime = seekTime - vodOrigin;
@@ -995,7 +1016,7 @@ async function main() {
         paused = true;
         playerToggle = document.createElement('div');
         playerToggle.id = 'toggle';
-        playerToggle.innerHTML = playerType === 'dvr' ? 'Switch to Twitch Player' : 'Switch to DVR Player';
+        playerToggle.innerText = playerType === 'dvr' ? 'Switch to Twitch Player' : 'Switch to DVR Player';
 
         playerContainer = document.createElement('div');
         playerContainer.id = 'player-container';
@@ -1070,6 +1091,7 @@ async function main() {
                 </div>
             </div>
             </div>
+            <div id='mute-overlay'><div>Click to unmute</div></div>
         `;
         videoContainer.appendChild(playerContainer);
         videoContainer.appendChild(playerToggle);
@@ -1089,6 +1111,10 @@ async function main() {
         document.getElementById('live').addEventListener('click', golive);
         document.getElementById('toggle').addEventListener('click', togglePlayer);
         document.getElementById('clip').addEventListener('click', createClip);
+        document.getElementById('mute-overlay').addEventListener('click', () => {
+            document.getElementById('mute-overlay').style.display = 'none';
+            player.muted = false;
+        });
         const savedVol = localStorage.getItem('twitch-dvr:vol');
         player.volume = savedVol ? parseFloat(savedVol) : 1;
         setVolume(player.volume);
@@ -1116,7 +1142,6 @@ async function main() {
         updateSeekLabel = (ev) => {
             if (!ev) ev = lastSeekEv;
             else lastSeekEv = ev;
-            console.log(ev);
 
             seekTooltip.style.left = `${ev.layerX - 30}px`;
             if (!maxTime) return;
