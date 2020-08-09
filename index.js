@@ -415,7 +415,6 @@ let totalElapsed = 0;
 let vodOrigin = 0;
 
 async function bufferLive(url) {
-    if (isTransitioningTypes) return;
     const resp = await fetch(url);
     const m3u8 = await resp.text();
     const segments = [];
@@ -433,13 +432,16 @@ async function bufferLive(url) {
         } else if (line.substring(0, 25) === '#EXT-X-TWITCH-TOTAL-SECS:') {
             totalElapsed = parseFloat(line.substring(25));
         } else if (line === "#EXT-X-DISCONTINUITY") {
+            const discontinuityID = lines[i-1];
+            fetched.add(discontinuityID);
+            if (lastFetched.has(discontinuityID)) continue;
             segment = { type: 'discontinuity' };
         }
 
         if (segment) {
-            fetched.add(segment);
+            fetched.add(segment.url);
 
-            if (!lastFetched.has(segment)) {
+            if (!lastFetched.has(segment.url)) {
                 totalElapsed -= (budget / 1000);
                 segments.push(segment);
             }
@@ -1114,11 +1116,12 @@ async function main() {
         updateSeekLabel = (ev) => {
             if (!ev) ev = lastSeekEv;
             else lastSeekEv = ev;
+            console.log(ev);
 
-            seekTooltip.style.left = `${ev.offsetX - 30}px`;
+            seekTooltip.style.left = `${ev.layerX - 30}px`;
             if (!maxTime) return;
 
-            const adjustedTime = getTimeAtOffset(ev.offsetX);
+            const adjustedTime = getTimeAtOffset(ev.layerX);
             if (maxTime - adjustedTime < vodDeadzone + vodDeadzoneBuffer) {
                 seekTooltipText.innerText = 'Live';
             } else {
