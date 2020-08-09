@@ -465,9 +465,10 @@ async function bufferLive(url) {
         }
     }
 
+    const lastFetchedSize = lastFetched.size;
     lastFetched = fetched;
 
-    if (segments.length > 3) return segments.slice(segments.length - 3);
+    if (segments.length > 3 && lastFetchedSize === 0) return segments.slice(segments.length - 3);
 
     return segments;
 }
