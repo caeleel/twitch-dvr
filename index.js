@@ -376,7 +376,7 @@ async function getVODUrl(channel, clientId) {
     const token = json.token;
     const sig = json.sig;
 
-    resp = await fetch(`https://usher.ttvnw.net/vod/${vodId}.m3u8?allow_source=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
+    resp = await fetch(`https://usher.ttvnw.net/vod/${vodId}.m3u8?allow_source=true&allow_audio_only=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
     const text = await resp.text();
     const manifests = parseMasterManifest(text);
 
@@ -523,7 +523,7 @@ async function getLiveM3U8(channel, clientId) {
     const token = json.token;
     const sig = json.sig;
 
-    resp = await fetch(`https://usher.ttvnw.net/api/channel/hls/${channel}.m3u8?allow_source=true&fast_bread=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
+    resp = await fetch(`https://usher.ttvnw.net/api/channel/hls/${channel}.m3u8?allow_source=true&allow_audio_only=true&fast_bread=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
     if (resp.status !== 200) {
         throw new Error('Stream not live');
     }
