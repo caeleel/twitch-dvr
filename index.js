@@ -266,7 +266,6 @@ let seekTooltip = null;
 let seekTooltipText = null;
 let seekContainer = null;
 let seekSlider = null;
-let currSegmentType = null;
 let isTransitioningTypes = false;
 let generation = 0;
 let vodOffset = 0;
@@ -416,6 +415,7 @@ let totalElapsed = 0;
 let vodOrigin = 0;
 
 async function bufferLive(url) {
+    if (isTransitioningTypes) return;
     const resp = await fetch(url);
     const m3u8 = await resp.text();
     const segments = [];
@@ -432,6 +432,8 @@ async function bufferLive(url) {
             segment = { url: line.substring(23), type: 'live' };
         } else if (line.substring(0, 25) === '#EXT-X-TWITCH-TOTAL-SECS:') {
             totalElapsed = parseFloat(line.substring(25));
+        } else if (line === "#EXT-X-DISCONTINUITY") {
+            segment = { type: 'discontinuity' };
         }
 
         if (segment) {
@@ -724,9 +726,7 @@ async function downloadSegments(startGeneration, lastPromise, segments) {
     for (const segment of segments) {
         if (startGeneration !== generation) break;
         try {
-            if (currSegmentType == null) {
-                currSegmentType = segment.type;
-            } else if (currSegmentType !== segment.type) {
+            if (segment.type === "discontinuity") {
                 isTransitioningTypes = true;
                 break;
             }
@@ -746,7 +746,7 @@ async function downloadSegments(startGeneration, lastPromise, segments) {
             console.log(`Warning: failed to fetch: ${e}, stopping download early`)
             if (videoMode === "live") {
                 pause();
-                switchChannel();
+                setTimeout(switchChannel, 1000);
             }
             break;
         }
@@ -782,7 +782,6 @@ function setVolume(vol) {
 let firstSegment = false;
 
 function resetTransmuxer() {
-    currSegmentType = null;
     isTransitioningTypes = false;
     if (transmuxer) transmuxer.off('data');
     transmuxer = new muxjs.mp4.Transmuxer();
@@ -828,7 +827,7 @@ function setVariant(idx) {
                 });
                 sourceBuffer.addEventListener('error', (buffer, ev) => {
                     pause();
-                    switchChannel();
+                    setTimeout(switchChannel, 1000);
                     console.warn('Failed to append to buffer');
                 });
                 budgetEnd = Date.now();
