@@ -384,7 +384,7 @@ async function getVODUrl(channel, clientId) {
     const token = json.token;
     const sig = json.sig;
 
-    resp = await fetch(`https://usher.ttvnw.net/vod/${vodId}.m3u8?allow_source=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
+    resp = await fetch(`https://usher.ttvnw.net/vod/${vodId}.m3u8?allow_source=true&allow_audio_only=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
     const text = await resp.text();
     const manifests = parseMasterManifest(text);
 
@@ -422,13 +422,11 @@ async function bufferVOD(url, time, first) {
     }
     const bufferAmount = Math.max(0, Math.min(bufferLimit / 2, maxTime - time - vodDeadzone));
     const toBuffer = first ? Math.floor(bufferAmount / vodSegmentLen) : Math.max(0, Math.floor((bufferAmount - sourceBuffer.buffered.end(0) + player.currentTime) / vodSegmentLen));
-    const toDownload = [];
-    for (let i = idx; i < idx + toBuffer; i++) {
-        toDownload.push({ url: `${baseURL}${i}.ts`, type: 'vod' });
-    }
-    const count = await downloadSegments(startGeneration, Promise.resolve(), toDownload);
+
+    await downloadSegments(startGeneration, Promise.resolve(), [{ url: `${baseURL}${idx}.ts`, type: 'vod' }]);
     if (generation !== startGeneration) return;
-    vodTimer = setTimeout(() => bufferVOD(url, time + vodSegmentLen * count, false), getRemainingBudget(vodSegmentLen * 1000));
+    const waitTime = toBuffer > 1 ? 20 : getRemainingBudget(vodSegmentLen * 1000);
+    vodTimer = setTimeout(() => bufferVOD(url, time + vodSegmentLen, false), waitTime);
 }
 
 let lastFetched = new Set();
@@ -436,6 +434,7 @@ let paused = true;
 let firstTime = true;
 let totalElapsed = 0;
 let vodOrigin = 0;
+let tmpVodOrigin = null;
 
 async function bufferLive(url) {
     const resp = await fetch(url);
@@ -504,6 +503,11 @@ function parseMasterManifest(m3u8) {
                         break;
                     case 'VIDEO':
                         variant.name = vals[1];
+                        if (vals[1] === '"audio_only"') {
+                            variant.resolution = 'audio';
+                            variant.framerate = 30;
+                            variant.codecs = '"mp4a.40.2"';
+                        }
                         break;
                     case 'FRAME-RATE':
                         variant.framerate = Math.ceil(parseFloat(vals[1]));
@@ -518,7 +522,7 @@ function parseMasterManifest(m3u8) {
         }
     }
 
-    return variants;
+    return variants.sort((a, b) => b.bandwidth - a.bandwidth);
 }
 
 async function getLiveM3U8(channel, clientId) {
@@ -532,7 +536,7 @@ async function getLiveM3U8(channel, clientId) {
     const token = json.token;
     const sig = json.sig;
 
-    resp = await fetch(`https://usher.ttvnw.net/api/channel/hls/${channel}.m3u8?allow_source=true&fast_bread=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
+    resp = await fetch(`https://usher.ttvnw.net/api/channel/hls/${channel}.m3u8?allow_source=true&allow_audio_only=true&fast_bread=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
     if (resp.status !== 200) {
         throw new Error('Stream not live');
     }
@@ -574,6 +578,7 @@ function afterBufferUpdate() {
             document.getElementById("mute-overlay").style.display = "flex";
             player.play();
         }), 0);
+        tmpVodOrigin = null;
         firstTime = false;
     } else if (numBuffers && player.currentTime < sourceBuffer.buffered.start(0)) {
         player.currentTime = sourceBuffer.buffered.start(0);
@@ -699,9 +704,10 @@ function seekToTime(seekTime) {
 
     switchMode('vod');
     vodOrigin = seekTime - (seekTime % vodSegmentLen);
+    tmpVodOrigin = seekTime;
     firstTime = true;
     resetTransmuxer();
-    bufferVOD(vodVariants[variantIdx], seekTime, true);
+    vodTimer = setTimeout(() => bufferVOD(vodVariants[variantIdx], seekTime, true), 500);
 }
 
 function golive() {
@@ -839,42 +845,46 @@ function setVariant(idx) {
     if (!document.getElementById('quality-picker')) return;
     idx = Math.max(0, Math.min(idx, variants.length - 1));
     localStorage.setItem('twitch-dvr:variant', idx);
-    document.getElementById('quality-picker').style.display = 'none';
     variantIdx = idx
+
+    const currTime = player.currentTime + vodOrigin;
+    
+    mediaSrc = new MediaSource();
+    if (player.src) {
+        URL.revokeObjectURL(player.src);
+    }
+    clearTimers();
+    sourceBuffer = null;
 
     if (!variants[idx]) return;
     document.getElementById('quality').innerText = variants[idx].resolution;
 
     resetTransmuxer();
-    if (videoMode === 'live') {
-        const variant = variants[idx];
-        lastFetched = new Set();
-        if (sourceBuffer) {
-            if (!paused) pause();
-            budgetEnd = Date.now();
+    player.src = URL.createObjectURL(mediaSrc);
+
+    lastFetched = new Set();
+    let variant = videoMode === 'live' ? variants[idx] : vodVariants[idx];
+    if (videoMode === 'live') pause();
+
+    mediaSrc.addEventListener('sourceopen', function() {
+        sourceBuffer = mediaSrc.addSourceBuffer(`video/mp4; codecs=${variant.codecs}`);
+        sourceBuffer.addEventListener('updateend', () => {
+            afterBufferUpdate();
+            appendToSourceBuffer();
+        });
+        sourceBuffer.addEventListener('error', () => {
+            pause();
+            setTimeout(switchChannel, 1000);
+            console.warn('Failed to append to buffer');
+        });
+        budgetEnd = Date.now();
+        if (videoMode === 'live') {
             play();
         } else {
-            mediaSrc.addEventListener('sourceopen', function() {
-                sourceBuffer = mediaSrc.addSourceBuffer(`video/mp4; codecs=${variant.codecs}`);
-                sourceBuffer.addEventListener('updateend', () => {
-                    afterBufferUpdate();
-                    appendToSourceBuffer();
-                });
-                sourceBuffer.addEventListener('error', (buffer, ev) => {
-                    pause();
-                    setTimeout(switchChannel, 1000);
-                    console.warn('Failed to append to buffer');
-                });
-                budgetEnd = Date.now();
-                play();
-            });
+            firstTime = true;
+            bufferVOD(variant, currTime, true);
         }
-    } else {
-        const variant = vodVariants[idx];
-        const currTime = player.currentTime + vodOrigin;
-        clearTimers();
-        bufferVOD(variant, currTime, true);
-    }
+    });
 }
 
 function switchMode(mode) {
@@ -902,12 +912,6 @@ function formatTime(secs) {
 
 async function switchChannel() {
     if (playerType === 'twitch') return;
-
-    mediaSrc = new MediaSource();
-    if (player.src) {
-        URL.revokeObjectURL(player.src);
-    }
-    sourceBuffer = null;
     switchMode('live');
 
     const channel = document.location.pathname.split('/')[1];
@@ -933,7 +937,6 @@ async function switchChannel() {
     }
 
     const savedVariant = localStorage.getItem('twitch-dvr:variant');
-    player.src = URL.createObjectURL(mediaSrc);
     setVariant(savedVariant ? parseInt(savedVariant) : 0);
     if (!document.querySelector('.anon-user')) document.getElementById('clip').style.display = 'block';
 
@@ -989,6 +992,7 @@ function keyboardHandler(e) {
     switch (e.keyCode) {
         case 37:
             let newTime = videoMode === 'vod' ? vodOrigin + player.currentTime - seekStep : maxTime - seekStep;
+            if (tmpVodOrigin) newTime = tmpVodOrigin - seekStep;
             if (maxTime - newTime < vodDeadzone + vodDeadzoneBuffer) {
                 newTime = maxTime - vodDeadzoneBuffer - vodDeadzone;
             }
@@ -996,7 +1000,7 @@ function keyboardHandler(e) {
             break;
         case 39:
             if (videoMode === 'live') break;
-            seekToTime(vodOrigin + player.currentTime + seekStep);
+            seekToTime(tmpVodOrigin ? tmpVodOrigin + seekStep : vodOrigin + player.currentTime + seekStep);
             break;
         case 32:
             const nodeName = e.target.nodeName;
