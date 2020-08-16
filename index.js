@@ -6,14 +6,14 @@ function addStyle(styleString) {
 
 addStyle(`
     #player-container {
+        background-color: black;
         width: 100%;
         height: 100%;
-        position: relative;
-        background-color: black;
+        position: absolute;
         user-select: none;
     }
 
-    #player-container.twitch {
+    #player-container.twitch, #control-hover.twitch {
         display: none;
     }
 
@@ -34,7 +34,7 @@ addStyle(`
 
     #control-hover {
         position: absolute;
-        height: 40%;
+        height: 60px;
         width: 100%;
         bottom: 0;
     }
@@ -63,6 +63,25 @@ addStyle(`
         text-align: center;
         width: 600px;
         margin-bottom: 20px;
+    }
+
+    #toast-overlay {
+        display: none;
+        position: absolute;
+        bottom: 100px;
+        width: 100%;
+        justify-content: center;
+        pointer-events: none;
+    }
+
+    #toast {
+        border-radius: 5px;
+        background-color: rgba(0, 0, 0, 0.8);
+        color: white;
+        font-weight: 600;
+        font-size: 20px;
+        padding: 10px 20px;
+        border: 2px solid white;
     }
 
     video {
@@ -260,6 +279,7 @@ addStyle(`
     }
 
     #quality-picker {
+        display: none;
         bottom: 42px;
         right: 80px;
         background-color: rgba(0, 0, 0, 0.8);
@@ -295,7 +315,8 @@ let videoMode = 'live';
 let transmuxer = null;
 let inChannelPage = false;
 let playerInstalled = false;
-let makingClip = false;
+let nativePlaying = false;
+let extensionsDiv = null;
 let playerType = localStorage.getItem('twitch-dvr:player-type') ? localStorage.getItem('twitch-dvr:player-type') : 'dvr';
 
 const bufferLimit = 200;
@@ -343,11 +364,24 @@ function toggleFullscreen() {
             document.exitFullscreen();
         }
     } else {
-        const element = document.getElementById('player-container');
+        const element = document.querySelector('.video-player__container');
         if (element.requestFullscreen) {
             element.requestFullscreen();
         }
     }
+}
+
+let toastTimer = null;
+function showToast(text) {
+    if (toastTimer) {
+        clearTimeout(toastTimer);
+    }
+    document.getElementById('toast').innerText = text;
+    document.getElementById('toast-overlay').style.display = 'flex';
+    toastTimer = setTimeout(() => {
+        document.getElementById('toast-overlay').style.display = 'none';
+        toastTimer = null;
+    }, 5000);
 }
 
 async function getVODUrl(channel, clientId) {
@@ -423,10 +457,14 @@ async function bufferVOD(url, time, first) {
     const bufferAmount = Math.max(0, Math.min(bufferLimit / 2, maxTime - time - vodDeadzone));
     const toBuffer = first ? Math.floor(bufferAmount / vodSegmentLen) : Math.max(0, Math.floor((bufferAmount - sourceBuffer.buffered.end(0) + player.currentTime) / vodSegmentLen));
 
-    await downloadSegments(startGeneration, Promise.resolve(), [{ url: `${baseURL}${idx}.ts`, type: 'vod' }]);
+    if (toBuffer > 0) {
+        time += vodSegmentLen;
+        await downloadSegments(startGeneration, Promise.resolve(), [{ url: `${baseURL}${idx}.ts`, type: 'vod' }]);
+    }
+
     if (generation !== startGeneration) return;
-    const waitTime = toBuffer > 1 ? 20 : getRemainingBudget(vodSegmentLen * 1000);
-    vodTimer = setTimeout(() => bufferVOD(url, time + vodSegmentLen, false), waitTime);
+    const waitTime = toBuffer > 1 ? 100 : 2000;
+    vodTimer = setTimeout(() => bufferVOD(url, time, false), waitTime);
 }
 
 let lastFetched = new Set();
@@ -496,7 +534,8 @@ function parseMasterManifest(m3u8) {
                         variant.bandwidth = parseInt(vals[1]);
                         break;
                     case 'RESOLUTION':
-                        variant.resolution = `${vals[1].split('x')[1]}p`;
+                        variant.vHeight = vals[1].split('x')[1];
+                        variant.resolution = `${variant.vHeight}p`;
                         break;
                     case 'CODECS':
                         variant.codecs = `${vals[1]},${parts[j+1]}`;
@@ -504,25 +543,26 @@ function parseMasterManifest(m3u8) {
                     case 'VIDEO':
                         variant.name = vals[1];
                         if (vals[1] === '"audio_only"') {
+                            variant.vHeight = 0;
                             variant.resolution = 'audio';
                             variant.framerate = 30;
                             variant.codecs = '"mp4a.40.2"';
                         }
                         break;
                     case 'FRAME-RATE':
-                        variant.framerate = Math.ceil(parseFloat(vals[1]));
+                        variant.framerate = parseFloat(vals[1]);
                         break;
                 }
             }
             if (variant.framerate !== 30) {
-                variant.resolution += variant.framerate;
+                variant.resolution += Math.ceil(variant.framerate);
             }
             variant.url = lines[i+1];
             variants.push(variant);
         }
     }
 
-    return variants.sort((a, b) => b.bandwidth - a.bandwidth);
+    return variants.sort((a, b) => b.vHeight - a.vHeight);
 }
 
 async function getLiveM3U8(channel, clientId) {
@@ -573,11 +613,16 @@ function afterBufferUpdate() {
             timeOriginPlayerTime = totalElapsed;
             timeOrigin = Date.now();
         }
-        if (!paused) setTimeout(() => player.play().catch((e) => {
-            player.muted = true;
-            document.getElementById("mute-overlay").style.display = "flex";
-            player.play();
-        }), 0);
+        if (!paused) {
+            setTimeout(() => {
+                player.play().catch((e) => {
+                    player.muted = true;
+                    document.getElementById("mute-overlay").style.display = "flex";
+                });
+            }, 0);
+        } else if (videoMode === 'vod') {
+            player.pause();
+        }
         tmpVodOrigin = null;
         firstTime = false;
     } else if (numBuffers && player.currentTime < sourceBuffer.buffered.start(0)) {
@@ -645,6 +690,7 @@ function pause() {
 
     lastFetched = new Set();
     clearTimers();
+    resetTransmuxer();
     paused = true;
     document.getElementById('controls').style.display = 'block';
 }
@@ -653,7 +699,10 @@ function play() {
     document.getElementById('play').style.display = 'none';
     document.getElementById('pause').style.display = 'block';
     if (videoMode === 'vod') {
-        player.play();
+        player.play().catch((e) => {
+            player.muted = true;
+            document.getElementById("mute-overlay").style.display = "flex";
+        });
         paused = false;
         return;
     }
@@ -736,11 +785,38 @@ function playNative(mute) {
         if (video.id !== 'player') {
             muted = video.muted;
             if (mute) video.muted = true;
+            nativePlaying = true;
             video.play();
             break;
         }
     }
     return muted;
+}
+
+function pauseNative(mute) {
+    nativePlaying = false;
+    for (const video of document.querySelectorAll('.video-player__container video')) {
+        if (video.id !== 'player' && !video.paused) {
+            video.pause();
+            setTimeout(() => {
+                pauseOverlay = document.querySelector('.player-overlay-background');
+                if (!pauseOverlay) return;
+                pauseOverlay.style.setProperty('display', 'none', 'important')
+                installExtensions();
+            }, 100);
+            if (mute != null) video.muted = mute;
+            break;
+        }
+    }
+}
+
+function hideNativeChrome() {
+    document.querySelector('.video-player__overlay').childNodes[0].style.display = 'none';
+    document.querySelector('.player-controls').style.setProperty('display', 'none', 'important');
+    if (document.querySelector('.top-bar')) {
+        document.querySelector('.top-bar').style.setProperty('display', 'none', 'important');
+    }
+    document.querySelector('.video-player__default-player').addEventListener('dblclick', toggleFullscreen);
 }
 
 function togglePlayer() {
@@ -750,14 +826,23 @@ function togglePlayer() {
         playerType = 'twitch';
         pause();
         playNative();
+        document.querySelector('.video-player__overlay').childNodes[0].style.display = '';
+        document.querySelector('.player-controls').style.display = '';
+        if (document.querySelector('.top-bar')) {
+            document.querySelector('.top-bar').style.display = '';
+        }
+        document.querySelector('.video-player__default-player').removeEventListener('dblclick', toggleFullscreen);
     } else {
         playerType = 'dvr';
+        pauseNative();
         switchChannel();
+        hideNativeChrome();
     }
 
     localStorage.setItem('twitch-dvr:player-type', playerType);
     document.querySelector('#toggle').innerText = `Switch to ${typeName} player`;
     document.getElementById('player-container').className = playerType;
+    document.getElementById('control-hover').className = playerType;
 }
 
 let bufferPromise = null;
@@ -892,6 +977,7 @@ function switchMode(mode) {
     budgetEnd = Date.now();
     resetTransmuxer();
     if (!document.getElementById('live')) return;
+    if (extensionsDiv) extensionsDiv.style.display = mode === 'live' ? 'block' : 'none';
     document.getElementById('live').className = 'control ' + mode;
     if (mode === 'live') seekSlider.style.width = '100%';
     const clipButton = document.getElementById('clip');
@@ -957,7 +1043,6 @@ function isInChannel(url) {
 
 const seekStep = 10;
 async function getClipButton(click) {
-    makingClip = true;
     const wasMuted = playNative(true);
     await new Promise((resolve) => setTimeout(resolve, 500));
 
@@ -970,14 +1055,7 @@ async function getClipButton(click) {
         }
     }
 
-    for (const video of document.querySelectorAll('.video-player__container video')) {
-        if (video.id !== 'player' && !video.paused) {
-            video.pause();
-            video.muted = wasMuted;
-            break;
-        }
-    }
-    makingClip = false;
+    pauseNative(wasMuted);
     return found;
 }
 
@@ -987,8 +1065,20 @@ async function createClip() {
     }
 }
 
+function installExtensions() {
+    for (const candidate of document.querySelectorAll('.video-player__overlay div.tw-c-text-overlay')) {
+        if (candidate.classList.length === 1) {
+            extensionsDiv = candidate;
+            document.querySelector('.extensions-video-overlay-size-container').style.display = 'block';
+            extensionsDiv.childNodes[0].classList.remove('tw-hide');
+        }
+    }
+}
+
 function keyboardHandler(e) {
     if (!player) return;
+    const nodeName = e.target.nodeName;
+    if (nodeName !== 'DIV' && nodeName !== 'BODY' && nodeName !== 'VIDEO') return;
     switch (e.keyCode) {
         case 37:
             let newTime = videoMode === 'vod' ? vodOrigin + player.currentTime - seekStep : maxTime - seekStep;
@@ -1003,21 +1093,38 @@ function keyboardHandler(e) {
             seekToTime(tmpVodOrigin ? tmpVodOrigin + seekStep : vodOrigin + player.currentTime + seekStep);
             break;
         case 32:
-            const nodeName = e.target.nodeName;
-            if (nodeName !== 'DIV' && nodeName !== 'BODY' && nodeName !== 'VIDEO') break;
             if (paused) play();
             else pause();
             e.stopPropagation();
+            break;
+        case 188:
+            if (videoMode === 'live') break;
+            if (!player.buffered || !player.buffered.length) break;
+            const seekTime = player.currentTime - 1 / (vodVariants[variantIdx].framerate);
+            if (player.buffered.start(0) > seekTime) {
+                showToast("Seek backward to frame-by-frame further")
+                break;
+            }
+            pause();
+            player.currentTime = seekTime;
+            break;
+        case 190:
+            if (videoMode === 'live') break;
+            if (!player.buffered || !player.buffered.length) break;
+            pause();
+            player.currentTime += 1 / (vodVariants[variantIdx].framerate);
             break;
     }
 }
 
 let playerContainer = null;
+let playerControls = null;
 let installationTimer = null;
 function uninstallPlayer() {
     playerInstalled = false;
     if (playerContainer && playerContainer.style) {
         playerContainer.style.display = 'none';
+        playerControls.style.display = 'none';
         switchMode('live');
         pause();
     } else {
@@ -1037,7 +1144,7 @@ async function main() {
     function installPlayer() {
         const videoContainer = document.querySelector('.video-player__container');
 
-        if (!videoContainer) {
+        if (!document.querySelector('.video-player__overlay')) {
             installationTimer = setTimeout(installPlayer, 1000);
             return;
         }
@@ -1052,11 +1159,14 @@ async function main() {
         playerToggle.innerText = playerType === 'dvr' ? 'Switch to Twitch Player' : 'Switch to DVR Player';
 
         playerContainer = document.createElement('div');
-        playerContainer.id = 'player-container';
         playerContainer.className = playerType;
-        playerContainer.innerHTML = `
-            <video id='player' width='100%' height='100%' playsinline'></video>
-            <div id='control-hover'>
+        playerContainer.id = 'player-container';
+        playerContainer.innerHTML = "<video id='player' width='100%' height='100%' playsinline'></video>";
+        playerControls = document.createElement('div');
+        playerControls.className = playerType;
+        playerControls.id = 'control-hover';
+        playerControls.innerHTML = `
+        <div id='control-hover'>
             <div id='controls'>
                 <div id='play' class='control'>
                     <svg width='16' height='20' viewBox='0 0 16 20' fill='none' xmlns='http://www.w3.org/2000/svg'>
@@ -1123,18 +1233,28 @@ async function main() {
                     </svg>
                 </div>
             </div>
-            </div>
-            <div id='mute-overlay' class='overlay'><div>Click to unmute</div></div>
-            <div id='clip-overlay' class='overlay'>
-                <div>
-                    Clipping failed. This could be because the channel has clipping disabled,
-                    or the native Twitch player is in the middle of an ad :(. If the Twitch player is in an ad,
-                    you'll have to either refresh the page or switch over to it to clip.
-                </div>
-                <div>OK</div>
-            </div>
-        `;
-        videoContainer.appendChild(playerContainer);
+        </div>`;
+        const muteOverlay = document.createElement('div');
+        muteOverlay.id = 'mute-overlay';
+        muteOverlay.innerHTML = `<div>Click to unmute</div>`;
+        const clipOverlay = document.createElement('div');
+        clipOverlay.id = 'clip-overlay';
+        clipOverlay.innerHTML = `
+        <div>
+            Clipping failed. This could be because the channel has clipping disabled,
+            or the native Twitch player is in the middle of an ad :(. If the Twitch player is in an ad,
+            you'll have to either refresh the page or switch over to it to clip.
+        </div>
+        <div>OK</div>`;
+        const toastOverlay = document.createElement('div');
+        toastOverlay.id = 'toast-overlay';
+        toastOverlay.innerHTML = `<div id='toast'>Test Toast</div>`;
+
+        videoContainer.insertBefore(playerContainer, document.querySelector('.video-player__default-player'));
+        videoContainer.appendChild(playerControls);
+        videoContainer.appendChild(muteOverlay);
+        videoContainer.appendChild(clipOverlay);
+        videoContainer.appendChild(toastOverlay);
         videoContainer.appendChild(playerToggle);
         videoContainer.addEventListener('mousemove', showToggleForAWhile);
         player = document.getElementById('player');
@@ -1146,23 +1266,23 @@ async function main() {
         document.getElementById('play').addEventListener('click', play);
         document.getElementById('pause').addEventListener('click', pause);
         document.getElementById('fullscreen').addEventListener('click', toggleFullscreen);
-        playerContainer.addEventListener('dblclick', toggleFullscreen);
         document.getElementById('quality').addEventListener('click', togglePicker);
         document.getElementById('quality').addEventListener('dblclick', (e) => e.stopPropagation());
         document.getElementById('live').addEventListener('click', golive);
         document.getElementById('toggle').addEventListener('click', togglePlayer);
         document.getElementById('clip').addEventListener('click', createClip);
-        document.getElementById('mute-overlay').addEventListener('click', () => {
+        muteOverlay.addEventListener('click', () => {
             document.getElementById('mute-overlay').style.display = 'none';
             player.muted = false;
         });
-        document.getElementById('clip-overlay').addEventListener('click', () => {
-            document.getElementById('clip-overlay').style.display = 'none';
+        clipOverlay.addEventListener('click', () => {
+            clipOverlay.style.display = 'none';
         });
         const savedVol = localStorage.getItem('twitch-dvr:vol');
         player.volume = savedVol ? parseFloat(savedVol) : 1;
         setVolume(player.volume);
         switchChannel();
+        if (playerType === 'dvr') hideNativeChrome();
 
         const volumeContainer = document.getElementById('volume-container');
         volumeContainer.addEventListener('mousedown', (ev) => {
@@ -1222,6 +1342,7 @@ async function main() {
                     installPlayer();
                 } else {
                     playerContainer.style.display = '';
+                    playerControls.style.display = '';
                     switchMode('live');
                     pause();
                     switchChannel();
@@ -1239,22 +1360,19 @@ async function main() {
         const adIframe = document.getElementById('amazon-video-ads-iframe');
         if (adIframe) adIframe.remove();
 
-        if (!makingClip) {
-            const videos = document.querySelectorAll('.video-player__container video');
-            for (const video of videos) {
-                if (video.id !== 'player' && !video.paused) {
-                    video.pause();
-                }
-            }
+        if (!nativePlaying) {
+            pauseNative(null);
         }
 
-        if (paused || !sourceBuffer || !player.buffered.length) return;
+        if (videoMode === 'live' && (paused || !sourceBuffer || !player.buffered.length)) return;
+
         const width = getSeekWidth();
         maxTime = (Date.now() - timeOrigin) / 1000 + timeOriginPlayerTime;
         const adjustedTime = videoMode === 'vod' ? vodOrigin + player.currentTime : maxTime;
 
         if (videoMode === 'vod' && width) seekSlider.style.width = `${(width - 2*handleRadius) * adjustedTime / maxTime + 2*handleRadius}px`;
         timerEl.innerText = formatTime(adjustedTime);
+        if (paused || !sourceBuffer || !player.buffered.length) return;
 
         if (isTransitioningTypes && lastRealTime > 0) {
             const realDiff = Date.now() - lastRealTime;
