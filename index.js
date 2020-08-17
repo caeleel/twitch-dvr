@@ -834,7 +834,7 @@ function togglePlayer() {
         document.querySelector('.video-player__default-player').removeEventListener('dblclick', toggleFullscreen);
     } else {
         playerType = 'dvr';
-        pauseNative();
+        pauseNative(null);
         switchChannel();
         hideNativeChrome();
     }
@@ -1236,14 +1236,15 @@ async function main() {
         </div>`;
         const muteOverlay = document.createElement('div');
         muteOverlay.id = 'mute-overlay';
+        muteOverlay.className = 'overlay';
         muteOverlay.innerHTML = `<div>Click to unmute</div>`;
         const clipOverlay = document.createElement('div');
         clipOverlay.id = 'clip-overlay';
+        clipOverlay.className = 'overlay';
         clipOverlay.innerHTML = `
         <div>
-            Clipping failed. This could be because the channel has clipping disabled,
-            or the native Twitch player is in the middle of an ad :(. If the Twitch player is in an ad,
-            you'll have to either refresh the page or switch over to it to clip.
+            Clipping failed. This could be because the native Twitch player is in the middle of an ad :(.
+            You'll have to either refresh the page (or go to another channel and back) or switch over to it to clip.
         </div>
         <div>OK</div>`;
         const toastOverlay = document.createElement('div');
