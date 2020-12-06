@@ -383,11 +383,66 @@ function showToast(text) {
     }, 5000);
 }
 
-async function getVODUrl(channel, clientId) {
+function getOauthToken() {
+    const cookies = document.cookie.split('; ');
+    for (const cookie of cookies) {
+        const [k, v] = cookie.split('=');
+        if (k === 'twilight-user') {
+            const twilightUser = JSON.parse(decodeURIComponent(v));
+            return twilightUser.authToken;
+        }
+    }
+    return null;
+}
+
+async function getM3U8(isLive, key, clientId) {
+    const oauthToken = getOauthToken();
     let resp = await fetch('https://gql.twitch.tv/gql', {
         method: 'POST',
         headers: {
             'client-id': clientId,
+            'Authorization': oauthToken ? `OAuth ${oauthToken}` : undefined,
+        },
+        body: JSON.stringify([{
+            operationName: 'PlaybackAccessToken_Template',
+            query: 'query PlaybackAccessToken_Template($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!) {  streamPlaybackAccessToken(channelName: $login, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isLive) {    value    signature    __typename  }  videoPlaybackAccessToken(id: $vodID, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isVod) {    value    signature    __typename  }}',
+            variables: {
+                isLive,
+                isVod: !isLive,
+                login: isLive ? key : '',
+                playerType: 'site',
+                vodID: isLive ? '' : key,
+            },
+        }]),
+    });
+    const json = await resp.json();
+    const rawToken = isLive ? json[0].data.streamPlaybackAccessToken : json[0].data.videoPlaybackAccessToken;
+    const token = rawToken.value;
+    const sig = rawToken.signature;
+
+    let url = `api/channel/hls/${key}`;
+    if (!isLive) url = `vod/${key}`;
+    resp = await fetch(`https://usher.ttvnw.net/${url}.m3u8?allow_source=true&allow_audio_only=true&fast_bread=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURIComponent(token)}`);
+    if (resp.status !== 200) {
+        throw new Error('Stream not live');
+    }
+    const text = await resp.text();
+
+    const parsed = parseMasterManifest(text);
+    return parsed;
+}
+
+function getLiveM3U8(channel, clientId) {
+    return getM3U8(true, channel, clientId);
+}
+
+async function getVODUrl(channel, clientId) {
+    const oauthToken = getOauthToken();
+    let resp = await fetch('https://gql.twitch.tv/gql', {
+        method: 'POST',
+        headers: {
+            'client-id': clientId,
+            'Authorization': oauthToken ? `OAuth ${oauthToken}` : undefined,
         },
         body: JSON.stringify([{
             operationName: 'HomeOfflineCarousel',
@@ -406,20 +461,7 @@ async function getVODUrl(channel, clientId) {
     });
     let json = await resp.json();
     const vodId = json[0].data.user.archiveVideos.edges[0].node.id;
-
-    resp = await fetch(`https://api.twitch.tv/api/vods/${vodId}/access_token`, {
-        headers: {
-            'client-id': clientId,
-        },
-    });
-
-    json = await resp.json();
-    const token = json.token;
-    const sig = json.sig;
-
-    resp = await fetch(`https://usher.ttvnw.net/vod/${vodId}.m3u8?allow_source=true&allow_audio_only=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
-    const text = await resp.text();
-    const manifests = parseMasterManifest(text);
+    const manifests = await getM3U8(false, vodId, clientId);
 
     resp = await fetch(manifests[0].url);
     const manifest = await resp.text();
@@ -562,27 +604,6 @@ function parseMasterManifest(m3u8) {
     }
 
     return variants.sort((a, b) => b.vHeight - a.vHeight);
-}
-
-async function getLiveM3U8(channel, clientId) {
-    let resp = await fetch(`https://api.twitch.tv/api/channels/${channel}/access_token`, {
-        headers: {
-            'client-id': clientId,
-        },
-    });
-
-    const json = await resp.json();
-    const token = json.token;
-    const sig = json.sig;
-
-    resp = await fetch(`https://usher.ttvnw.net/api/channel/hls/${channel}.m3u8?allow_source=true&allow_audio_only=true&fast_bread=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURI(token)}`);
-    if (resp.status !== 200) {
-        throw new Error('Stream not live');
-    }
-    const text = await resp.text();
-
-    const parsed = parseMasterManifest(text);
-    return parsed;
 }
 
 async function appendToSourceBuffer() {
@@ -968,6 +989,7 @@ async function switchChannel() {
     try {
         variants = await getLiveM3U8(channel, clientId);
     } catch(e) {
+        console.log(e);
         uninstallPlayer();
         return;
     }
@@ -1200,6 +1222,15 @@ async function main() {
             </div>
             <div id='toast-overlay'><div id='toast'>Test Toast</div></div>
         `;
+
+        let lastKnownVolume;
+        function muteOrUnmute() {
+            if (player.volume === 0) {
+                setVolume(lastKnownVolume);
+            } else {
+                setVolume(0);
+            }
+        }
         videoContainer.appendChild(playerContainer);
         videoContainer.appendChild(playerToggle);
         videoContainer.addEventListener('mousemove', showToggleForAWhile);
@@ -1218,6 +1249,7 @@ async function main() {
         document.getElementById('live').addEventListener('click', golive);
         document.getElementById('toggle').addEventListener('click', togglePlayer);
         document.getElementById('clip').addEventListener('click', createClip);
+        document.getElementById('volume').addEventListener('click', muteOrUnmute);
         document.getElementById('mute-overlay').addEventListener('click', () => {
             document.getElementById('mute-overlay').style.display = 'none';
             player.muted = false;
@@ -1226,6 +1258,7 @@ async function main() {
             document.getElementById('clip-overlay').style.display = 'none';
         });
         const savedVol = localStorage.getItem('twitch-dvr:vol');
+        lastKnownVolume = savedVol;
         player.volume = savedVol ? parseFloat(savedVol) : 1;
         setVolume(player.volume);
         switchChannel();
@@ -1239,6 +1272,10 @@ async function main() {
                 setVolume((ev.pageX - leftSide - handleRadius) / 100);
             }
             const mouseUp = (ev) => {
+                let vol = (ev.pageX - leftSide - handleRadius) / 100;
+                vol = Math.min(1, Math.max(0, vol));
+                if (vol !== 0) lastKnownVolume = vol;
+
                 document.removeEventListener('mousemove', mouseMove);
                 document.removeEventListener('mouseUp', mouseUp);
             }
