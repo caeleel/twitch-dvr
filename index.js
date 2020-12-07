@@ -65,6 +65,25 @@ addStyle(`
         margin-bottom: 20px;
     }
 
+    #toast-overlay {
+        display: none;
+        position: absolute;
+        bottom: 100px;
+        width: 100%;
+        justify-content: center;
+        pointer-events: none;
+    }
+
+    #toast {
+        border-radius: 5px;
+        background-color: rgba(0, 0, 0, 0.8);
+        color: white;
+        font-weight: 600;
+        font-size: 20px;
+        padding: 10px 20px;
+        border: 2px solid white;
+    }
+
     video {
         position: absolute;
     }
@@ -260,6 +279,7 @@ addStyle(`
     }
 
     #quality-picker {
+        display: none;
         bottom: 42px;
         right: 80px;
         background-color: rgba(0, 0, 0, 0.8);
@@ -350,6 +370,19 @@ function toggleFullscreen() {
     }
 }
 
+let toastTimer = null;
+function showToast(text) {
+    if (toastTimer) {
+        clearTimeout(toastTimer);
+    }
+    document.getElementById('toast').innerText = text;
+    document.getElementById('toast-overlay').style.display = 'flex';
+    toastTimer = setTimeout(() => {
+        document.getElementById('toast-overlay').style.display = 'none';
+        toastTimer = null;
+    }, 5000);
+}
+
 async function getVODUrl(channel, clientId) {
     let resp = await fetch('https://gql.twitch.tv/gql', {
         method: 'POST',
@@ -423,10 +456,14 @@ async function bufferVOD(url, time, first) {
     const bufferAmount = Math.max(0, Math.min(bufferLimit / 2, maxTime - time - vodDeadzone));
     const toBuffer = first ? Math.floor(bufferAmount / vodSegmentLen) : Math.max(0, Math.floor((bufferAmount - sourceBuffer.buffered.end(0) + player.currentTime) / vodSegmentLen));
 
-    await downloadSegments(startGeneration, Promise.resolve(), [{ url: `${baseURL}${idx}.ts`, type: 'vod' }]);
+    if (toBuffer > 0) {
+        time += vodSegmentLen;
+        await downloadSegments(startGeneration, Promise.resolve(), [{ url: `${baseURL}${idx}.ts`, type: 'vod' }]);
+    }
+
     if (generation !== startGeneration) return;
-    const waitTime = toBuffer > 1 ? 20 : getRemainingBudget(vodSegmentLen * 1000);
-    vodTimer = setTimeout(() => bufferVOD(url, time + vodSegmentLen, false), waitTime);
+    const waitTime = toBuffer > 1 ? 100 : 2000;
+    vodTimer = setTimeout(() => bufferVOD(url, time, false), waitTime);
 }
 
 let lastFetched = new Set();
@@ -496,7 +533,8 @@ function parseMasterManifest(m3u8) {
                         variant.bandwidth = parseInt(vals[1]);
                         break;
                     case 'RESOLUTION':
-                        variant.resolution = `${vals[1].split('x')[1]}p`;
+                        variant.vHeight = vals[1].split('x')[1];
+                        variant.resolution = `${variant.vHeight}p`;
                         break;
                     case 'CODECS':
                         variant.codecs = `${vals[1]},${parts[j+1]}`;
@@ -504,25 +542,26 @@ function parseMasterManifest(m3u8) {
                     case 'VIDEO':
                         variant.name = vals[1];
                         if (vals[1] === '"audio_only"') {
+                            variant.vHeight = 0;
                             variant.resolution = 'audio';
                             variant.framerate = 30;
                             variant.codecs = '"mp4a.40.2"';
                         }
                         break;
                     case 'FRAME-RATE':
-                        variant.framerate = Math.ceil(parseFloat(vals[1]));
+                        variant.framerate = parseFloat(vals[1]);
                         break;
                 }
             }
             if (variant.framerate !== 30) {
-                variant.resolution += variant.framerate;
+                variant.resolution += Math.ceil(variant.framerate);
             }
             variant.url = lines[i+1];
             variants.push(variant);
         }
     }
 
-    return variants.sort((a, b) => b.bandwidth - a.bandwidth);
+    return variants.sort((a, b) => b.vHeight - a.vHeight);
 }
 
 async function getLiveM3U8(channel, clientId) {
@@ -573,11 +612,16 @@ function afterBufferUpdate() {
             timeOriginPlayerTime = totalElapsed;
             timeOrigin = Date.now();
         }
-        if (!paused) setTimeout(() => player.play().catch((e) => {
-            player.muted = true;
-            document.getElementById("mute-overlay").style.display = "flex";
-            player.play();
-        }), 0);
+        if (!paused) {
+            setTimeout(() => {
+                player.play().catch((e) => {
+                    player.muted = true;
+                    document.getElementById("mute-overlay").style.display = "flex";
+                });
+            }, 0);
+        } else if (videoMode === 'vod') {
+            player.pause();
+        }
         tmpVodOrigin = null;
         firstTime = false;
     } else if (numBuffers && player.currentTime < sourceBuffer.buffered.start(0)) {
@@ -645,6 +689,7 @@ function pause() {
 
     lastFetched = new Set();
     clearTimers();
+    resetTransmuxer();
     paused = true;
     document.getElementById('controls').style.display = 'block';
 }
@@ -653,7 +698,10 @@ function play() {
     document.getElementById('play').style.display = 'none';
     document.getElementById('pause').style.display = 'block';
     if (videoMode === 'vod') {
-        player.play();
+        player.play().catch((e) => {
+            player.muted = true;
+            document.getElementById("mute-overlay").style.display = "flex";
+        });
         paused = false;
         return;
     }
@@ -989,6 +1037,8 @@ async function createClip() {
 
 function keyboardHandler(e) {
     if (!player) return;
+    const nodeName = e.target.nodeName;
+    if (nodeName !== 'DIV' && nodeName !== 'BODY' && nodeName !== 'VIDEO') return;
     switch (e.keyCode) {
         case 37:
             let newTime = videoMode === 'vod' ? vodOrigin + player.currentTime - seekStep : maxTime - seekStep;
@@ -1003,11 +1053,26 @@ function keyboardHandler(e) {
             seekToTime(tmpVodOrigin ? tmpVodOrigin + seekStep : vodOrigin + player.currentTime + seekStep);
             break;
         case 32:
-            const nodeName = e.target.nodeName;
-            if (nodeName !== 'DIV' && nodeName !== 'BODY' && nodeName !== 'VIDEO') break;
             if (paused) play();
             else pause();
             e.stopPropagation();
+            break;
+        case 188:
+            if (videoMode === 'live') break;
+            if (!player.buffered || !player.buffered.length) break;
+            const seekTime = player.currentTime - 1 / (vodVariants[variantIdx].framerate);
+            if (player.buffered.start(0) > seekTime) {
+                showToast("Seek backward to frame-by-frame further")
+                break;
+            }
+            pause();
+            player.currentTime = seekTime;
+            break;
+        case 190:
+            if (videoMode === 'live') break;
+            if (!player.buffered || !player.buffered.length) break;
+            pause();
+            player.currentTime += 1 / (vodVariants[variantIdx].framerate);
             break;
     }
 }
@@ -1133,6 +1198,7 @@ async function main() {
                 </div>
                 <div>OK</div>
             </div>
+            <div id='toast-overlay'><div id='toast'>Test Toast</div></div>
         `;
         videoContainer.appendChild(playerContainer);
         videoContainer.appendChild(playerToggle);
@@ -1248,13 +1314,16 @@ async function main() {
             }
         }
 
-        if (paused || !sourceBuffer || !player.buffered.length) return;
+        if (videoMode === 'live' && (paused || !sourceBuffer || !player.buffered.length)) return;
+
         const width = getSeekWidth();
         maxTime = (Date.now() - timeOrigin) / 1000 + timeOriginPlayerTime;
         const adjustedTime = videoMode === 'vod' ? vodOrigin + player.currentTime : maxTime;
 
         if (videoMode === 'vod' && width) seekSlider.style.width = `${(width - 2*handleRadius) * adjustedTime / maxTime + 2*handleRadius}px`;
         timerEl.innerText = formatTime(adjustedTime);
+
+        if (paused || !sourceBuffer || !player.buffered.length) return;
 
         if (isTransitioningTypes && lastRealTime > 0) {
             const realDiff = Date.now() - lastRealTime;
