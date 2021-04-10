@@ -308,6 +308,7 @@ let seekTooltip = null;
 let seekTooltipText = null;
 let seekContainer = null;
 let seekSlider = null;
+let updateSeekLabel = null;
 let isTransitioningTypes = false;
 let generation = 0;
 let vodOffset = 0;
@@ -316,6 +317,7 @@ let transmuxer = null;
 let inChannelPage = false;
 let playerInstalled = false;
 let makingClip = false;
+let seeking = false;
 let playerType = localStorage.getItem('twitch-dvr:player-type') ? localStorage.getItem('twitch-dvr:player-type') : 'dvr';
 
 const bufferLimit = 200;
@@ -747,8 +749,38 @@ function getTimeAtOffset(offsetX) {
     else return (offsetX - handleRadius) / (width - 2*handleRadius) * maxTime;
 }
 
-function seek(ev) {
-    const seekTime = getTimeAtOffset(ev.offsetX);
+function updateSeekBar(offsetX) {
+    const seekTime = getTimeAtOffset(offsetX);
+    const width = getSeekWidth();
+    seekSlider.style.width = `${(width - 2*handleRadius) * seekTime / maxTime + 2*handleRadius}px`;
+}
+
+function onSeekDown(ev) {
+    const leftSide = ev.pageX - ev.offsetX;
+    const leftSideForLabel = ev.pageX - ev.layerX;
+    updateSeekBar(ev.offsetX);
+    seeking = true;
+    seekTooltip.style.display = 'flex';
+
+    function mouseMove(ev) {
+        updateSeekBar(ev.pageX - leftSide);
+        updateSeekLabel(ev.pageX - leftSideForLabel);
+    }
+
+    function mouseUp(ev) {
+        seeking = false;
+        document.removeEventListener('mousemove', mouseMove);
+        document.removeEventListener('mouseup', mouseUp);
+        seek(ev.pageX - leftSide);
+        seekTooltip.style.display = '';
+    }
+
+    document.addEventListener('mousemove', mouseMove);
+    document.addEventListener('mouseup', mouseUp);
+}
+
+function seek(offsetX) {
+    const seekTime = getTimeAtOffset(offsetX);
     seekToTime(seekTime);
 }
 
@@ -758,8 +790,6 @@ function seekToTime(seekTime) {
         return;
     }
 
-    const width = getSeekWidth();
-    seekSlider.style.width = `${(width - 2*handleRadius) * seekTime / maxTime + 2*handleRadius}px`;
     const timer = document.getElementById('timer');
     if (timer) timer.innerText = formatTime(seekTime);
 
@@ -917,7 +947,7 @@ function setVariant(idx) {
     variantIdx = idx
 
     const currTime = player.currentTime + vodOrigin;
-    
+
     mediaSrc = new MediaSource();
     if (player.src) {
         URL.revokeObjectURL(player.src);
@@ -1118,7 +1148,6 @@ function uninstallPlayer() {
 document.addEventListener('keydown', keyboardHandler);
 
 async function main() {
-    let updateSeekLabel = null;
     let timerEl = null;
 
     function installPlayer() {
@@ -1265,7 +1294,7 @@ async function main() {
 
         const volumeContainer = document.getElementById('volume-container');
         volumeContainer.addEventListener('mousedown', (ev) => {
-            let leftSide = ev.pageX - ev.offsetX;
+            const leftSide = ev.pageX - ev.offsetX;
             setVolume((ev.offsetX - handleRadius) / 100);
 
             const mouseMove = (ev) => {
@@ -1285,15 +1314,17 @@ async function main() {
 
         timerEl = document.getElementById('timer');
 
-        let lastSeekEv = null;
-        updateSeekLabel = (ev) => {
-            if (!ev) ev = lastSeekEv;
-            else lastSeekEv = ev;
+        let lastSeekOffset = null;
+        updateSeekLabel = (seekOffset) => {
+            if (!seekOffset) seekOffset = lastSeekOffset;
+            else lastSeekOffset = seekOffset;
+            seekOffset = Math.max(handleRadius, seekOffset);
+            seekOffset = Math.min(getSeekWidth() - handleRadius, seekOffset);
 
-            seekTooltip.style.left = `${ev.layerX - 30}px`;
+            seekTooltip.style.left = `${seekOffset - 30}px`;
             if (!maxTime) return;
 
-            const adjustedTime = getTimeAtOffset(ev.layerX);
+            const adjustedTime = getTimeAtOffset(seekOffset);
             if (maxTime - adjustedTime < vodDeadzone + vodDeadzoneBuffer) {
                 seekTooltipText.innerText = 'Live';
             } else {
@@ -1301,8 +1332,8 @@ async function main() {
             }
         };
 
-        seekContainer.addEventListener('mousemove', updateSeekLabel);
-        seekContainer.addEventListener('click', seek);
+        seekContainer.addEventListener('mousemove', (ev) => updateSeekLabel(ev.layerX));
+        seekContainer.addEventListener('mousedown', onSeekDown);
     }
 
     let currentUrl = document.location.pathname;
@@ -1357,6 +1388,7 @@ async function main() {
         maxTime = (Date.now() - timeOrigin) / 1000 + timeOriginPlayerTime;
         const adjustedTime = videoMode === 'vod' ? vodOrigin + player.currentTime : maxTime;
 
+        if (seeking) return;
         if (videoMode === 'vod' && width) seekSlider.style.width = `${(width - 2*handleRadius) * adjustedTime / maxTime + 2*handleRadius}px`;
         timerEl.innerText = formatTime(adjustedTime);
 
