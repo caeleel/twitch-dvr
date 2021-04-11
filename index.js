@@ -27,6 +27,7 @@ addStyle(`
         right: 20px;
         flex-direction: column;
         align-items: flex-end;
+        z-index: 100;
     }
 
     #settings-button {
@@ -1170,9 +1171,9 @@ let installationTimer = null;
 function uninstallPlayer() {
     playerInstalled = false;
     if (playerContainer && playerContainer.style) {
-        playerContainer.style.display = 'none';
-        switchMode('live');
         pause();
+        playerContainer.parentElement.removeChild(playerContainer);
+        playerContainer = null;
     } else {
         if (installationTimer) {
             clearTimeout(installationTimer);
@@ -1304,8 +1305,6 @@ async function main() {
             }
         }
         videoContainer.appendChild(playerContainer);
-        videoContainer.appendChild(playerSettings);
-        videoContainer.addEventListener('mousemove', showToggleForAWhile);
         player = document.getElementById('player');
         volume = document.getElementById('volume-slider');
         seekTooltip = document.getElementById('seek-tooltip');
@@ -1320,8 +1319,6 @@ async function main() {
         document.getElementById('quality').addEventListener('dblclick', (e) => e.stopPropagation());
         document.getElementById('live').addEventListener('click', golive);
         document.getElementById('clip').addEventListener('click', createClip);
-        document.getElementById('settings-button').addEventListener('click', toggleSettings);
-        document.getElementById('toggle').addEventListener('click', togglePlayer);
         document.getElementById('volume').addEventListener('click', muteOrUnmute);
         document.getElementById('mute-overlay').addEventListener('click', () => {
             document.getElementById('mute-overlay').style.display = 'none';
@@ -1330,6 +1327,18 @@ async function main() {
         document.getElementById('clip-overlay').addEventListener('click', () => {
             document.getElementById('clip-overlay').style.display = 'none';
         });
+
+        if (!document.getElementById('settings')) {
+            videoContainer.appendChild(playerSettings);
+            videoContainer.addEventListener('mousemove', showToggleForAWhile);
+            document.getElementById('settings-button').addEventListener('click', toggleSettings);
+            document.getElementById('toggle').addEventListener('click', togglePlayer);
+            document.getElementById('reset-player').addEventListener('click', () => {
+                uninstallPlayer();
+                installPlayer();
+            });
+        }
+
         const savedVol = localStorage.getItem('twitch-dvr:vol');
         lastKnownVolume = savedVol;
         player.volume = savedVol ? parseFloat(savedVol) : 1;
