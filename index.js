@@ -17,19 +17,42 @@ addStyle(`
         display: none;
     }
 
-    #toggle {
+    #settings {
         display: none;
         position: absolute;
-        cursor: pointer;
-        background-color: rgba(0, 0, 0, 0.8);
-        color: white;
-        height: 18px;
         line-height: 10px;
         font-size: 10px;
-        padding: 4px 10px;
+        color: white;
         top: 20px;
         right: 20px;
+        flex-direction: column;
+        align-items: flex-end;
+    }
+
+    #settings-button {
+        cursor: pointer;
+        height: 18px;
+        padding: 4px 10px;
         border-radius: 9px;
+        background-color: rgba(0, 0, 0, 0.8);
+        width: 60px;
+    }
+
+    #settings-menu {
+        display: none;
+        background-color: rgba(0, 0, 0, 0.8);
+        padding: 4px 0;
+        margin-top: 4px;
+        border-radius: 2px;
+    }
+
+    .settings-item {
+        padding: 4px 8px;
+        cursor: pointer;
+    }
+
+    #settings.active #settings-menu {
+        display: block;
     }
 
     #control-hover {
@@ -293,7 +316,7 @@ addStyle(`
         padding: 4px 7.5px;
     }
 
-    .picker:hover {
+    .picker:hover, .settings-item:hover {
         background-color: rgba(255, 255, 255, .2);
     }
 `);
@@ -327,8 +350,8 @@ const vodDeadzoneBuffer = 15;
 let vodSegmentLen = 10;
 
 function hideToggle() {
-    if (document.getElementById('toggle')) {
-        document.getElementById('toggle').style.display = '';
+    if (document.getElementById('settings')) {
+        document.getElementById('settings').style.display = '';
     }
 
     if (paused) return;
@@ -343,13 +366,13 @@ let toggleTimer = null;
 function showToggle() {
     if (toggleTimer) clearTimeout(toggleTimer);
     toggleTimer = null;
-    if (document.getElementById('toggle')) {
-        document.getElementById('toggle').style.display = 'block';
+    if (document.getElementById('settings')) {
+        document.getElementById('settings').style.display = 'flex';
     }
 
     if (document.getElementById('player-container')) {
         document.getElementById('player-container').style.cursor = '';
-        document.getElementById('controls').style.display = 'block';
+        document.getElementById('controls').style.display = 'flex';
     }
 }
 
@@ -859,6 +882,19 @@ function togglePlayer() {
     document.getElementById('player-container').className = playerType;
 }
 
+function toggleSettings() {
+    const settings = document.querySelector('#settings');
+    const className = settings.className;
+
+    if (className !== 'active') {
+        settings.className = 'active';
+        setTimeout(() => document.addEventListener('click', toggleSettings), 1);
+    } else {
+        settings.className = '';
+        document.removeEventListener('click', toggleSettings);
+    }
+}
+
 let bufferPromise = null;
 
 async function downloadSegments(startGeneration, lastPromise, segments) {
@@ -1163,9 +1199,16 @@ async function main() {
         }
 
         paused = true;
-        playerToggle = document.createElement('div');
-        playerToggle.id = 'toggle';
-        playerToggle.innerText = playerType === 'dvr' ? 'Switch to Twitch Player' : 'Switch to DVR Player';
+        const playerSettings = document.createElement('div');
+        playerSettings.id = 'settings';
+        const switchMessage = playerType === 'dvr' ? 'Switch to Twitch Player' : 'Switch to DVR Player';
+        playerSettings.innerHTML = `
+            <div id='settings-button'>Settings</div>
+            <div id='settings-menu'>
+                <div id='toggle' class='settings-item'>${switchMessage}</div>
+                <div id='reset-player' class='settings-item'>Reset Player</div>
+            </div>
+        `;
 
         playerContainer = document.createElement('div');
         playerContainer.id = 'player-container';
@@ -1261,7 +1304,7 @@ async function main() {
             }
         }
         videoContainer.appendChild(playerContainer);
-        videoContainer.appendChild(playerToggle);
+        videoContainer.appendChild(playerSettings);
         videoContainer.addEventListener('mousemove', showToggleForAWhile);
         player = document.getElementById('player');
         volume = document.getElementById('volume-slider');
@@ -1276,8 +1319,9 @@ async function main() {
         document.getElementById('quality').addEventListener('click', togglePicker);
         document.getElementById('quality').addEventListener('dblclick', (e) => e.stopPropagation());
         document.getElementById('live').addEventListener('click', golive);
-        document.getElementById('toggle').addEventListener('click', togglePlayer);
         document.getElementById('clip').addEventListener('click', createClip);
+        document.getElementById('settings-button').addEventListener('click', toggleSettings);
+        document.getElementById('toggle').addEventListener('click', togglePlayer);
         document.getElementById('volume').addEventListener('click', muteOrUnmute);
         document.getElementById('mute-overlay').addEventListener('click', () => {
             document.getElementById('mute-overlay').style.display = 'none';
