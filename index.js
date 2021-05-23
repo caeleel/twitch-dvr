@@ -52,6 +52,12 @@ addStyle(`
         cursor: pointer;
     }
 
+    .settings-item.disabled {
+        color: rgba(255, 255, 255, 0.5);
+        pointer-events: none;
+        cursor: auto;
+    }
+
     #settings.active #settings-menu {
         display: block;
     }
@@ -580,7 +586,7 @@ async function bufferLive(url) {
     const lastFetchedSize = lastFetched.size;
     lastFetched = fetched;
 
-    if (segments.length > 3 && lastFetchedSize === 0) return segments.slice(segments.length - 3);
+    if (segments.length > 2 && lastFetchedSize === 0) return segments.slice(segments.length - 2);
 
     return segments;
 }
@@ -871,11 +877,13 @@ function togglePlayer() {
     if (playerType === 'dvr') {
         typeName = 'DVR';
         playerType = 'twitch';
+        document.getElementById('reset-player').className = 'settings-item disabled';
         pause();
         playNative();
     } else {
         playerType = 'dvr';
         switchChannel();
+        document.getElementById('reset-player').className = 'settings-item enabled';
     }
 
     localStorage.setItem('twitch-dvr:player-type', playerType);
@@ -1203,11 +1211,12 @@ async function main() {
         const playerSettings = document.createElement('div');
         playerSettings.id = 'settings';
         const switchMessage = playerType === 'dvr' ? 'Switch to Twitch Player' : 'Switch to DVR Player';
+        const resetPlayerClass = playerType === 'dvr' ? 'enabled' : 'disabled';
         playerSettings.innerHTML = `
             <div id='settings-button'>Settings</div>
             <div id='settings-menu'>
                 <div id='toggle' class='settings-item'>${switchMessage}</div>
-                <div id='reset-player' class='settings-item'>Reset Player</div>
+                <div id='reset-player' class='settings-item ${resetPlayerClass}'>Reset Player</div>
             </div>
         `;
 
@@ -1393,6 +1402,8 @@ async function main() {
     inChannelPage = isInChannel(currentUrl);
     if (inChannelPage) installPlayer();
 
+    let fastForwarding = false;
+
     setInterval(() => {
         if (document.location.pathname !== currentUrl) {
             let prevChannel = null;
@@ -1436,6 +1447,20 @@ async function main() {
         }
 
         if (videoMode === 'live' && (paused || !sourceBuffer || !player.buffered.length)) return;
+
+        if (videoMode === 'live' && !fastForwarding) {
+            // If we've buffered too much, fast forward until we only have 2s of buffer.
+            const buffered = player.buffered.end(0) - player.currentTime;
+            if (buffered > 2.3) {
+                const duration = 1000 * (buffered - 2) / .1;
+                player.playbackRate = 1.1;
+                fastForwarding = true;
+                setTimeout(() => {
+                    fastForwarding = false;
+                    player.playbackRate = 1;
+                }, duration);
+            }
+        }
 
         const width = getSeekWidth();
         maxTime = (Date.now() - timeOrigin) / 1000 + timeOriginPlayerTime;
