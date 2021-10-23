@@ -8,7 +8,8 @@ addStyle(`
     #player-container {
         width: 100%;
         height: 100%;
-        position: relative;
+        position: absolute;
+        top: 0;
         background-color: black;
         user-select: none;
     }
@@ -1099,7 +1100,7 @@ async function getClipButton(click) {
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     let found = false;
-    const buttons = document.querySelectorAll('.tw-core-button--overlay');
+    const buttons = document.querySelectorAll('button');
     for (const button of buttons) {
         if (button.dataset.aTarget === 'player-clip-button') {
             found = true;
