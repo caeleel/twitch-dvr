@@ -341,8 +341,10 @@ let videoMode = 'live';
 let transmuxer = null;
 let inChannelPage = false;
 let playerInstalled = false;
-let makingClip = false;
 let seeking = false;
+let channel = null;
+let vodId = null;
+let adjustedTime = null;
 let playerType = localStorage.getItem('twitch-dvr:player-type') ? localStorage.getItem('twitch-dvr:player-type') : 'dvr';
 
 const bufferLimit = 200;
@@ -350,6 +352,8 @@ const handleRadius = 7.25;
 const vodDeadzone = 15;
 const vodDeadzoneBuffer = 15;
 let vodSegmentLen = 10;
+
+const clientId = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
 
 function hideToggle() {
     if (document.getElementById('settings')) {
@@ -423,33 +427,24 @@ function getOauthToken() {
 }
 
 async function getM3U8(isLive, key, clientId) {
-    const oauthToken = getOauthToken();
-    let resp = await fetch('https://gql.twitch.tv/gql', {
-        method: 'POST',
-        headers: {
-            'client-id': clientId,
-            'Authorization': oauthToken ? `OAuth ${oauthToken}` : undefined,
+    const json = await fetchGQL([{
+        operationName: 'PlaybackAccessToken_Template',
+        query: 'query PlaybackAccessToken_Template($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!) {  streamPlaybackAccessToken(channelName: $login, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isLive) {    value    signature    __typename  }  videoPlaybackAccessToken(id: $vodID, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isVod) {    value    signature    __typename  }}',
+        variables: {
+            isLive,
+            isVod: !isLive,
+            login: isLive ? key : '',
+            playerType: 'site',
+            vodID: isLive ? '' : key,
         },
-        body: JSON.stringify([{
-            operationName: 'PlaybackAccessToken_Template',
-            query: 'query PlaybackAccessToken_Template($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!) {  streamPlaybackAccessToken(channelName: $login, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isLive) {    value    signature    __typename  }  videoPlaybackAccessToken(id: $vodID, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isVod) {    value    signature    __typename  }}',
-            variables: {
-                isLive,
-                isVod: !isLive,
-                login: isLive ? key : '',
-                playerType: 'site',
-                vodID: isLive ? '' : key,
-            },
-        }]),
-    });
-    const json = await resp.json();
+    }]);
     const rawToken = isLive ? json[0].data.streamPlaybackAccessToken : json[0].data.videoPlaybackAccessToken;
     const token = rawToken.value;
     const sig = rawToken.signature;
 
     let url = `api/channel/hls/${key}`;
     if (!isLive) url = `vod/${key}`;
-    resp = await fetch(`https://usher.ttvnw.net/${url}.m3u8?allow_source=true&allow_audio_only=true&fast_bread=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURIComponent(token)}`);
+    const resp = await fetch(`https://usher.ttvnw.net/${url}.m3u8?allow_source=true&allow_audio_only=true&fast_bread=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURIComponent(token)}`);
     if (resp.status !== 200) {
         throw new Error('Stream not live');
     }
@@ -465,32 +460,24 @@ function getLiveM3U8(channel, clientId) {
 
 async function getVODUrl(channel, clientId) {
     const oauthToken = getOauthToken();
-    let resp = await fetch('https://gql.twitch.tv/gql', {
-        method: 'POST',
-        headers: {
-            'client-id': clientId,
-            'Authorization': oauthToken ? `OAuth ${oauthToken}` : undefined,
+    let json = await fetchGQL([{
+        operationName: 'HomeOfflineCarousel',
+        variables: {
+            channelLogin: channel,
+            includeTrailerUpsell: false,
+            trailerUpsellVideoID: ''
         },
-        body: JSON.stringify([{
-            operationName: 'HomeOfflineCarousel',
-            variables: {
-                channelLogin: channel,
-                includeTrailerUpsell: false,
-                trailerUpsellVideoID: ''
-            },
-            extensions: {
-                persistedQuery: {
-                    version: 1,
-                    sha256Hash: '0c97fdcb4e0366b25ae35eb89cc932ecbbb056f663f92735d53776602e4e94c5',
-                }
-            },
-        }]),
-    });
-    let json = await resp.json();
-    const vodId = json[0].data.user.archiveVideos.edges[0].node.id;
+        extensions: {
+            persistedQuery: {
+                version: 1,
+                sha256Hash: '0c97fdcb4e0366b25ae35eb89cc932ecbbb056f663f92735d53776602e4e94c5',
+            }
+        },
+    }]);
+    vodId = json[0].data.user.archiveVideos.edges[0].node.id;
     const manifests = await getM3U8(false, vodId, clientId);
 
-    resp = await fetch(manifests[0].url);
+    const resp = await fetch(manifests[0].url);
     const manifest = await resp.text();
     const histogram = {};
     let maxCount = 0;
@@ -1033,8 +1020,7 @@ function switchMode(mode) {
     if (mode === 'live') seekSlider.style.width = '100%';
     const clipButton = document.getElementById('clip');
     if (!clipButton) return;
-    if (mode === 'vod') clipButton.style.display = '';
-    else if (!document.querySelector('.anon-user')) clipButton.style.display = 'block';
+    if (!document.querySelector('.anon-user')) clipButton.style.display = 'block';
 }
 
 function formatTime(secs) {
@@ -1051,8 +1037,8 @@ async function switchChannel() {
     if (playerType === 'twitch') return;
     switchMode('live');
 
-    const channel = document.location.pathname.split('/')[1];
-    const clientId = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
+    vodId = null;
+    channel = document.location.pathname.split('/')[1];
     document.getElementById('quality-picker').innerHTML = '';
     try {
         variants = await getLiveM3U8(channel, clientId);
@@ -1094,35 +1080,57 @@ function isInChannel(url) {
 }
 
 const seekStep = 10;
-async function getClipButton(click) {
-    makingClip = true;
-    const wasMuted = playNative(true);
-    await new Promise((resolve) => setTimeout(resolve, 500));
 
-    let found = false;
-    const buttons = document.querySelectorAll('button');
-    for (const button of buttons) {
-        if (button.dataset.aTarget === 'player-clip-button') {
-            found = true;
-            if (click) button.click();
-        }
-    }
-
-    for (const video of document.querySelectorAll('.video-player__container video')) {
-        if (video.id !== 'player' && !video.paused) {
-            video.pause();
-            video.muted = wasMuted;
-            break;
-        }
-    }
-    makingClip = false;
-    return found;
+async function fetchGQL(payload) {
+    const oauthToken = getOauthToken();
+    const resp = await fetch('https://gql.twitch.tv/gql', {
+        method: 'POST',
+        headers: {
+            'client-id': clientId,
+            'Authorization': oauthToken ? `OAuth ${oauthToken}` : undefined,
+        },
+        body: JSON.stringify(payload),
+    });
+    return await resp.json();
 }
 
 async function createClip() {
-    if (!await getClipButton(/* click = */ true)) {
-        document.getElementById('clip-overlay').style.display = 'flex';
-    }
+    let json = await fetchGQL([{
+        operationName: 'VideoPlayerClipsButtonBroadcaster',
+        extensions: {
+            persistedQuery: {
+                version: 1,
+                sha256Hash: '730fb0ffd8f189610597747a011af437a122e842cd80db337c1ecf876a0da173',
+            },
+        },
+        variables: {
+            input: {
+                login: channel,
+                ownsVideoID: null,
+            }
+        }
+    }]);
+    const user = json[0].data.userByAttribute;
+
+    json = await fetchGQL([{
+        operationName: 'createClip',
+        extensions: {
+            persistedQuery: {
+                version: 1,
+                sha256Hash: '518982ccc596c07839a6188e075adc80475b7bc4606725f3011b640b87054ecf',
+            }
+        },
+        variables: {
+            input: {
+                broadcastID: user.stream.id,
+                broadcasterID: user.id,
+                offsetSeconds: Math.round(adjustedTime - 4),
+                videoID: videoMode === 'live' ? undefined : vodId,
+            },
+        },
+    }]);
+    const clipURL = `${json[0].data.createClip.clip.url}/edit`;
+    window.open(clipURL, '_blank');
 }
 
 function keyboardHandler(e) {
@@ -1286,14 +1294,6 @@ async function main() {
             </div>
             </div>
             <div id='mute-overlay' class='overlay'><div>Click to unmute</div></div>
-            <div id='clip-overlay' class='overlay'>
-                <div>
-                    Clipping failed. This could be because the channel has clipping disabled,
-                    or the native Twitch player is in the middle of an ad :(. If the Twitch player is in an ad,
-                    you'll have to either refresh the page or switch over to it to clip.
-                </div>
-                <div>OK</div>
-            </div>
             <div id='toast-overlay'><div id='toast'>Test Toast</div></div>
         `;
 
@@ -1324,9 +1324,6 @@ async function main() {
         document.getElementById('mute-overlay').addEventListener('click', () => {
             document.getElementById('mute-overlay').style.display = 'none';
             player.muted = false;
-        });
-        document.getElementById('clip-overlay').addEventListener('click', () => {
-            document.getElementById('clip-overlay').style.display = 'none';
         });
 
         if (!document.getElementById('settings')) {
@@ -1427,12 +1424,10 @@ async function main() {
         const adIframe = document.getElementById('amazon-video-ads-iframe');
         if (adIframe) adIframe.remove();
 
-        if (!makingClip) {
-            const videos = document.querySelectorAll('.video-player__container video');
-            for (const video of videos) {
-                if (video.id !== 'player' && !video.paused) {
-                    video.pause();
-                }
+        const videos = document.querySelectorAll('.video-player__container video');
+        for (const video of videos) {
+            if (video.id !== 'player' && !video.paused) {
+                video.pause();
             }
         }
 
@@ -1440,7 +1435,7 @@ async function main() {
 
         const width = getSeekWidth();
         maxTime = (Date.now() - timeOrigin) / 1000 + timeOriginPlayerTime;
-        const adjustedTime = videoMode === 'vod' ? vodOrigin + player.currentTime : maxTime;
+        adjustedTime = videoMode === 'vod' ? vodOrigin + player.currentTime : maxTime;
 
         if (seeking) return;
         if (videoMode === 'vod' && width) seekSlider.style.width = `${(width - 2*handleRadius) * adjustedTime / maxTime + 2*handleRadius}px`;
