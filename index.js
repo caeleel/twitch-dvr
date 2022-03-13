@@ -1137,6 +1137,8 @@ function keyboardHandler(e) {
     if (!player) return;
     const nodeName = e.target.nodeName;
     if (nodeName !== 'DIV' && nodeName !== 'BODY' && nodeName !== 'VIDEO') return;
+    if (e.target.attributes.role && e.target.attributes.role.value === 'textbox') return;
+    if (e.target.dataset.aTarget === 'chat-input') return;
     switch (e.keyCode) {
         case 37:
             let newTime = videoMode === 'vod' ? vodOrigin + player.currentTime - seekStep : maxTime - seekStep;
