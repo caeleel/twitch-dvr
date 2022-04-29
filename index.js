@@ -1038,7 +1038,7 @@ async function switchChannel() {
     switchMode('live');
 
     vodId = null;
-    channel = document.location.pathname.split('/')[1];
+    channel = getChannelName(document.location.pathname);
     document.getElementById('quality-picker').innerHTML = '';
     try {
         variants = await getLiveM3U8(channel, clientId);
@@ -1073,9 +1073,14 @@ async function switchChannel() {
     }
 }
 
+function getChannelName(url) {
+    const urlParts = url.split('/');
+    return (urlParts.length === 3 && urlParts[1] === 'moderator') ? urlParts[2] : urlParts[1];
+}
+
 function isInChannel(url) {
     const urlParts = url.split('/');
-    if (urlParts.length === 3 && (urlParts[2] === 'videos' || urlParts[2] === 'schedule' || urlParts[2] === 'about')) return true;
+    if (urlParts.length === 3 && (urlParts[2] === 'videos' || urlParts[2] === 'schedule' || urlParts[2] === 'about' || urlParts[1] == 'moderator')) return true;
     return urlParts.length === 2 && url !== '/' && url !== '/directory' && url !== '/search';
 }
 
