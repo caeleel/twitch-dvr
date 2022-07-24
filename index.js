@@ -450,10 +450,14 @@ function toggleFullscreen() {
     }
 }
 
-function toggleTheaterMode() {
+function toggleTheaterModeIcon() {
     const button = document.getElementById('theater');
     button.classList.toggle('active');
     button.classList.toggle('inactive');
+}
+
+function toggleTheaterMode() {
+    toggleTheaterModeIcon();
     document.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 84, altKey: true }));
 }
 
@@ -967,8 +971,7 @@ function togglePlayer() {
         const inTheaterMode = !!document.querySelector('.video-player__container--theatre');
         const theaterMode = document.getElementById('theater');
         if (inTheaterMode !== theaterMode.classList.contains('active')) {
-            theaterMode.classList.toggle('active');
-            theaterMode.classList.toggle('inactive');
+            toggleTheaterModeIcon();
         }
         playerType = 'dvr';
         switchChannel();
@@ -1268,6 +1271,11 @@ function keyboardHandler(e) {
             if (paused) play();
             else pause();
             e.stopPropagation();
+            break;
+        case 84:
+            if (e.altKey) {
+                toggleTheaterModeIcon();
+            }
             break;
         case 188:
             if (videoMode === 'live') break;
