@@ -393,6 +393,7 @@ let channel = null;
 let vodId = null;
 let adjustedTime = null;
 let vodsDisabled = false;
+let vodsSubOnly = false;
 let playerType = localStorage.getItem('twitch-dvr:player-type') ? localStorage.getItem('twitch-dvr:player-type') : 'dvr';
 
 const bufferLimit = 200;
@@ -500,6 +501,12 @@ async function getM3U8(isLive, key, clientId) {
     let url = `api/channel/hls/${key}`;
     if (!isLive) url = `vod/${key}`;
     const resp = await fetch(`https://usher.ttvnw.net/${url}.m3u8?allow_source=true&allow_audio_only=true&fast_bread=true&playlist_include_framerate=true&reassignments_supported=true&sig=${sig}&token=${encodeURIComponent(token)}`);
+    if (resp.status === 403) {
+        vodsSubOnly = true;
+        vodsDisabled = true;
+        throw new Error('Auth error');
+    }
+
     if (resp.status !== 200) {
         throw new Error('Stream not live');
     }
@@ -513,8 +520,9 @@ function getLiveM3U8(channel, clientId) {
     return getM3U8(true, channel, clientId);
 }
 
-function showErrorOverlay() {
+function showErrorOverlay(msg = 'Could not rewind the stream. This could be because VODs are disabled or not being auto-published. See <a target="_blank" href="https://karljiang.com/dvrplayer">this page</a> for more info.') {
     document.getElementById('error-overlay').style.display = 'flex';
+    document.getElementById('error-text').innerHTML = msg;
 }
 
 async function getVODUrl(channel, clientId) {
@@ -543,7 +551,7 @@ async function getVODUrl(channel, clientId) {
     const vodAgo = (new Date() - new Date(video.node.publishedAt)) / 1000;
     const timeDiff = Math.abs(vodAgo - totalElapsed);
     vodId = video.node.id;
-    if (timeDiff > 300) {
+    if (timeDiff > 1200) {
         vodsDisabled = true;
         return;
     }
@@ -605,6 +613,7 @@ let totalElapsedPromise = new Promise(resolve => { totalElapsedIsSet = resolve }
 
 function resetTotalElapsedPromise() {
     vodsDisabled = false;
+    vodsSubOnly = false;
     totalElapsedPromise = new Promise(resolve => { totalElapsedIsSet = resolve });
 }
 
@@ -882,6 +891,11 @@ function seek(offsetX) {
 function seekToTime(seekTime) {
     if (maxTime - seekTime < vodDeadzoneBuffer + vodDeadzoneBuffer) {
         golive();
+        return;
+    }
+
+    if (vodsSubOnly) {
+        showErrorOverlay("VODs on this channel are sub-only. You must sub in order to rewind.");
         return;
     }
 
@@ -1399,7 +1413,7 @@ async function main() {
             </div>
             <div id='mute-overlay' class='overlay'><div>Click to unmute</div></div>
             <div id='toast-overlay'><div id='toast'>Test Toast</div></div>
-            <div id='error-overlay' class='overlay'><div><p>Error rewinding stream</p><br/><p>Could not rewind the stream. This could be because VODs are disabled, sub-only, or not being auto-published. See <a target="_blank" href="https://karljiang.com/dvrplayer">this page</a> for more info.</p><p><br/><button onclick="document.getElementById('error-overlay').style.display='none'">Close</button></p></div></div>
+            <div id='error-overlay' class='overlay'><div><p>Error rewinding stream</p><br/><p id='error-text'></p><p><br/><button onclick="document.getElementById('error-overlay').style.display='none'">Close</button></p></div></div>
         `;
 
         let lastKnownVolume;
