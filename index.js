@@ -1,7 +1,7 @@
 function addStyle(styleString) {
-  const style = document.createElement('style');
-  style.textContent = styleString;
-  document.head.append(style);
+    const style = document.createElement('style');
+    style.textContent = styleString;
+    document.head.append(style);
 }
 
 addStyle(`
@@ -77,7 +77,7 @@ addStyle(`
         height: 100%;
         justify-content: center;
         align-items: center;
-        background-color: rgba(0, 0, 0, 0.4);
+        background-color: rgba(0, 0, 0, 0.6);
         color: white;
         flex-direction: column;
         font-weight: 600;
@@ -88,6 +88,16 @@ addStyle(`
         text-align: center;
         width: 600px;
         margin-bottom: 20px;
+    }
+
+    .overlay a, .overlay a:hover {
+        color: #C5B6E2;
+    }
+
+    .overlay button {
+        border: 1px solid white;
+        padding: 2px 10px;
+        border-radius: 4px;
     }
 
     #toast-overlay {
@@ -128,7 +138,7 @@ addStyle(`
         width: 8px;
         border-radius: 4px;
         bottom: 26px;
-        right: 142px;
+        right: 172px;
     }
 
     #live.live, #live.vod:hover {
@@ -171,7 +181,7 @@ addStyle(`
     }
 
     #seek-outer {
-        width: calc(100% - 450px);
+        width: calc(100% - 480px);
         left: 230px;
     }
 
@@ -283,10 +293,47 @@ addStyle(`
         right: 50px;
     }
 
+    #theater {
+        display: flex;
+        bottom: 22px;
+        height: 16px;
+        width: 18px;
+        right: 81px;
+    }
+
+    #theater.inactive {
+        border: 2px solid white;
+        border-radius: 2px;
+        box-sizing: border-box;
+    }
+
+    #theater.active #theaterl {
+        border-radius: 2px 0 0 2px;
+        height: 16px;
+        width: 10px;
+    }
+
+    #theater.active #theaterr {
+        width: 6px;
+        height: 16px;
+        border-radius: 0 2px 2px 0;
+        margin-left: 2px;
+    }
+
+    #theater.active #theaterl, #theater.active #theaterr {
+        background-color: white;
+    }
+
+    #theater.inactive #theaterl {
+        border-right: 2px solid white;
+        width: 10px;
+        height: 12px;
+    }
+
     #quality {
         bottom: 20px;
         height: 20px;
-        right: 80px;
+        right: 110px;
         box-sizing: border-box;
         padding: 4px 6px;
         background-color: rgba(0, 0, 0, 0.8);
@@ -297,7 +344,7 @@ addStyle(`
     #timer {
         bottom: 19.5px;
         height: 20px;
-        left: calc(100% - 210px);
+        left: calc(100% - 240px);
         box-sizing: border-box;
         padding: 4px 6px;
         color: white;
@@ -306,7 +353,7 @@ addStyle(`
     #quality-picker {
         display: none;
         bottom: 42px;
-        right: 80px;
+        right: 110px;
         background-color: rgba(0, 0, 0, 0.8);
         color: white;
         padding: 6px 0;
@@ -345,6 +392,7 @@ let seeking = false;
 let channel = null;
 let vodId = null;
 let adjustedTime = null;
+let vodsDisabled = false;
 let playerType = localStorage.getItem('twitch-dvr:player-type') ? localStorage.getItem('twitch-dvr:player-type') : 'dvr';
 
 const bufferLimit = 200;
@@ -399,6 +447,13 @@ function toggleFullscreen() {
             element.requestFullscreen();
         }
     }
+}
+
+function toggleTheaterMode() {
+    const button = document.getElementById('theater');
+    button.classList.toggle('active');
+    button.classList.toggle('inactive');
+    document.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 84, altKey: true }));
 }
 
 let toastTimer = null;
@@ -458,6 +513,10 @@ function getLiveM3U8(channel, clientId) {
     return getM3U8(true, channel, clientId);
 }
 
+function showErrorOverlay() {
+    document.getElementById('error-overlay').style.display = 'flex';
+}
+
 async function getVODUrl(channel, clientId) {
     const oauthToken = getOauthToken();
     let json = await fetchGQL([{
@@ -474,7 +533,20 @@ async function getVODUrl(channel, clientId) {
             }
         },
     }]);
-    vodId = json[0].data.user.archiveVideos.edges[0].node.id;
+
+    await totalElapsedPromise;
+    const video = json[0].data.user.archiveVideos.edges[0];
+    if (!video) {
+        vodsDisabled = true;
+        return;
+    }
+    const vodAgo = (new Date() - new Date(video.node.publishedAt)) / 1000;
+    const timeDiff = Math.abs(vodAgo - totalElapsed);
+    vodId = video.node.id;
+    if (timeDiff > 300) {
+        vodsDisabled = true;
+        return;
+    }
     const manifests = await getM3U8(false, vodId, clientId);
 
     const resp = await fetch(manifests[0].url);
@@ -528,6 +600,13 @@ let firstTime = true;
 let totalElapsed = 0;
 let vodOrigin = 0;
 let tmpVodOrigin = null;
+let totalElapsedIsSet = function () { };
+let totalElapsedPromise = new Promise(resolve => { totalElapsedIsSet = resolve });
+
+function resetTotalElapsedPromise() {
+    vodsDisabled = false;
+    totalElapsedPromise = new Promise(resolve => { totalElapsedIsSet = resolve });
+}
 
 async function bufferLive(url) {
     const resp = await fetch(url);
@@ -543,13 +622,14 @@ async function bufferLive(url) {
         if (line.substring(0, 8) === '#EXTINF:') {
             canHaveDiscontinuity = true;
             const isLive = line.split(',')[1] === 'live';
-            segment = { url: lines[i+1], type: isLive ? 'live' : 'ad' };
+            segment = { url: lines[i + 1], type: isLive ? 'live' : 'ad' };
         } else if (line.substring(0, 23) === '#EXT-X-TWITCH-PREFETCH:') {
             segment = { url: line.substring(23), type: 'live' };
         } else if (line.substring(0, 25) === '#EXT-X-TWITCH-TOTAL-SECS:') {
             totalElapsed = parseFloat(line.substring(25));
+            totalElapsedIsSet();
         } else if (line === "#EXT-X-DISCONTINUITY" && canHaveDiscontinuity) {
-            const discontinuityID = lines[i-1];
+            const discontinuityID = lines[i - 1];
             fetched.add(discontinuityID);
             if (lastFetched.has(discontinuityID)) continue;
             segment = { type: 'discontinuity' };
@@ -593,7 +673,7 @@ function parseMasterManifest(m3u8) {
                         variant.resolution = `${variant.vHeight}p`;
                         break;
                     case 'CODECS':
-                        variant.codecs = `${vals[1]},${parts[j+1]}`;
+                        variant.codecs = `${vals[1]},${parts[j + 1]}`;
                         break;
                     case 'VIDEO':
                         variant.name = vals[1];
@@ -612,7 +692,7 @@ function parseMasterManifest(m3u8) {
             if (variant.framerate !== 30) {
                 variant.resolution += Math.ceil(variant.framerate);
             }
-            variant.url = lines[i+1];
+            variant.url = lines[i + 1];
             variants.push(variant);
         }
     }
@@ -694,7 +774,7 @@ function clearTimers() {
             if (maxBuffered > 0) {
                 sourceBuffer.remove(0, maxBuffered);
             }
-        } catch(e) {
+        } catch (e) {
             // pass
         }
     }
@@ -751,20 +831,23 @@ function play() {
 function getSeekWidth() {
     const container = document.getElementById('player-container');
     if (!container) return 0;
-    return container.getBoundingClientRect().width - 450;
+    return container.getBoundingClientRect().width - 480;
 }
 
 function getTimeAtOffset(offsetX) {
     const width = getSeekWidth();
     if (offsetX < handleRadius) return 0;
     else if (width - offsetX < handleRadius) return maxTime;
-    else return (offsetX - handleRadius) / (width - 2*handleRadius) * maxTime;
+    else return (offsetX - handleRadius) / (width - 2 * handleRadius) * maxTime;
 }
 
 function updateSeekBar(offsetX) {
+    if (vodsDisabled) {
+        return;
+    }
     const seekTime = getTimeAtOffset(offsetX);
     const width = getSeekWidth();
-    seekSlider.style.width = `${(width - 2*handleRadius) * seekTime / maxTime + 2*handleRadius}px`;
+    seekSlider.style.width = `${(width - 2 * handleRadius) * seekTime / maxTime + 2 * handleRadius}px`;
 }
 
 function onSeekDown(ev) {
@@ -799,6 +882,11 @@ function seek(offsetX) {
 function seekToTime(seekTime) {
     if (maxTime - seekTime < vodDeadzoneBuffer + vodDeadzoneBuffer) {
         golive();
+        return;
+    }
+
+    if (vodsDisabled) {
+        showErrorOverlay();
         return;
     }
 
@@ -862,6 +950,12 @@ function togglePlayer() {
         pause();
         playNative();
     } else {
+        const inTheaterMode = !!document.querySelector('.video-player__container--theatre');
+        const theaterMode = document.getElementById('theater');
+        if (inTheaterMode !== theaterMode.classList.contains('active')) {
+            theaterMode.classList.toggle('active');
+            theaterMode.classList.toggle('inactive');
+        }
         playerType = 'dvr';
         switchChannel();
     }
@@ -907,7 +1001,7 @@ async function downloadSegments(startGeneration, lastPromise, segments) {
                 transmuxer.flush();
             }
             count++;
-        } catch(e) {
+        } catch (e) {
             console.log(`Warning: failed to fetch: ${e}, stopping download early`)
             if (videoMode === "live") {
                 pause();
@@ -926,7 +1020,7 @@ function getRemainingBudget(incr) {
     return remaining;
 }
 
-const rebuffer = async function() {
+const rebuffer = async function () {
     const startGeneration = generation;
 
     const segments = await bufferLive(variants[variantIdx].url);
@@ -990,7 +1084,7 @@ function setVariant(idx) {
     let variant = videoMode === 'live' ? variants[idx] : vodVariants[idx];
     if (videoMode === 'live') pause();
 
-    mediaSrc.addEventListener('sourceopen', function() {
+    mediaSrc.addEventListener('sourceopen', function () {
         sourceBuffer = mediaSrc.addSourceBuffer(`video/mp4; codecs=${variant.codecs}`);
         sourceBuffer.addEventListener('updateend', () => {
             afterBufferUpdate();
@@ -1035,6 +1129,7 @@ function formatTime(secs) {
 
 async function switchChannel() {
     if (playerType === 'twitch') return;
+    resetTotalElapsedPromise();
     switchMode('live');
 
     vodId = null;
@@ -1042,7 +1137,7 @@ async function switchChannel() {
     document.getElementById('quality-picker').innerHTML = '';
     try {
         variants = await getLiveM3U8(channel, clientId);
-    } catch(e) {
+    } catch (e) {
         console.log(e);
         uninstallPlayer();
         return;
@@ -1129,7 +1224,10 @@ async function createClip() {
             },
         },
     }]);
-    const clipURL = `${json[0].data.createClip.clip.url}/edit`;
+    let clipURL = 'https://clips.twitch.tv/clips/user_restricted';
+    if (json[0].data.createClip.clip) {
+        clipURL = `${json[0].data.createClip.clip.url}/edit`;
+    }
     window.open(clipURL, '_blank');
 }
 
@@ -1278,6 +1376,10 @@ async function main() {
                 </div>
                 <div id='quality-picker' class='control'></div>
                 <div id='quality' class='control'></div>
+                <div id='theater' class='control inactive'>
+                    <div id='theaterl'></div>
+                    <div id='theaterr'></div>
+                </div>
                 <div id='clip' class='control'>
                     <svg width='20' height='20' viewBox='0 0 20 20' fill='none' xmlns='http://www.w3.org/2000/svg'>
                     <path d='M14.594 4.495L14.009 2.585L15.922 2L16.507 3.91L14.594 4.495V4.495ZM11.14 3.46L11.725 5.371L13.638 4.787L13.053 2.877L11.14 3.46V3.46ZM8.856 6.247L8.272 4.337L10.184 3.753L10.769 5.663L8.856 6.247V6.247ZM5.403 5.213L5.987 7.123L7.9 6.54L7.315 4.629L5.403 5.213V5.213ZM2.534 6.09L3.118 8L5.031 7.416L4.446 5.506L2.534 6.089V6.09ZM5 9H3V16C3 16.5304 3.21071 17.0391 3.58579 17.4142C3.96086 17.7893 4.46957 18 5 18H15C15.5304 18 16.0391 17.7893 16.4142 17.4142C16.7893 17.0391 17 16.5304 17 16V9H15V16H5V9Z' fill='white'/>
@@ -1297,6 +1399,7 @@ async function main() {
             </div>
             <div id='mute-overlay' class='overlay'><div>Click to unmute</div></div>
             <div id='toast-overlay'><div id='toast'>Test Toast</div></div>
+            <div id='error-overlay' class='overlay'><div><p>Error rewinding stream</p><br/><p>Could not rewind the stream. This could be because VODs are disabled, sub-only, or not being auto-published. See <a target="_blank" href="https://karljiang.com/dvrplayer">this page</a> for more info.</p><p><br/><button onclick="document.getElementById('error-overlay').style.display='none'">Close</button></p></div></div>
         `;
 
         let lastKnownVolume;
@@ -1322,10 +1425,12 @@ async function main() {
         document.getElementById('quality').addEventListener('dblclick', (e) => e.stopPropagation());
         document.getElementById('live').addEventListener('click', golive);
         document.getElementById('clip').addEventListener('click', createClip);
+        document.getElementById('theater').addEventListener('click', toggleTheaterMode);
         document.getElementById('volume').addEventListener('click', muteOrUnmute);
         document.getElementById('mute-overlay').addEventListener('click', () => {
             document.getElementById('mute-overlay').style.display = 'none';
             player.muted = false;
+            player.play();
         });
 
         if (!document.getElementById('settings')) {
@@ -1440,7 +1545,7 @@ async function main() {
         adjustedTime = videoMode === 'vod' ? vodOrigin + player.currentTime : maxTime;
 
         if (seeking) return;
-        if (videoMode === 'vod' && width) seekSlider.style.width = `${(width - 2*handleRadius) * adjustedTime / maxTime + 2*handleRadius}px`;
+        if (videoMode === 'vod' && width) seekSlider.style.width = `${(width - 2 * handleRadius) * adjustedTime / maxTime + 2 * handleRadius}px`;
         timerEl.innerText = formatTime(adjustedTime);
 
         if (paused || !sourceBuffer || !player.buffered.length) return;
